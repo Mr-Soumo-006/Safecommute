@@ -21,8 +21,8 @@ Each phone creates its own key pair (private key stays on the device), encrypts 
   * Hardware Shake-to-Alert (Accelerometer)
   * Commute Timer (Dead-man's switch)
   * Zero-Knowledge E2EE Encryption
-  * Twilio SMS Fallback Integration
-* **Tech Stack:** React Native, Expo, TweetNaCl (Pure JS Crypto), Node.js, Socket.io, Twilio.
+  * Custom Native Android SMS Module (Offline Fallback using physical SIM card)
+* **Tech Stack:** React Native, Expo Dev Client, Kotlin (Native Android), TweetNaCl (Pure JS Crypto), Node.js, Socket.io.
 
 ### ⏳ Phase 2 — Police & Responder Network
 **Goal:** Route Phase 1 alerts beyond family members—sending them instantly to local authorities and verified civilian responders nearby using grid-based geospatial matching.
@@ -56,5 +56,8 @@ npm start
 ```bash
 cd mobile
 npm install
-npx expo start
+# Build the custom dev client to inject Native SMS permissions
+eas build -p android --profile development
+# Start the Metro bundler
+npx expo start --dev-client
 ```

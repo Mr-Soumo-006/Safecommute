@@ -1,16 +1,16 @@
 import 'react-native-get-random-values';
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, Switch, Alert, Vibration, TouchableOpacity, ActivityIndicator, ScrollView, TextInput, KeyboardAvoidingView, Platform } from 'react-native';
+import { StyleSheet, Text, View, Switch, Alert, Vibration, TouchableOpacity, ActivityIndicator, ScrollView, TextInput, KeyboardAvoidingView, Platform, PermissionsAndroid } from 'react-native';
 import { Accelerometer } from 'expo-sensors';
 import * as Location from 'expo-location';
-import * as SMS from 'expo-sms';
 import { Ionicons } from '@expo/vector-icons';
 import { io } from 'socket.io-client';
 import nacl from 'tweetnacl';
 import util from 'tweetnacl-util';
+import * as DirectSms from './modules/direct-sms';
 
 // Updated to your actual Wi-Fi IP
-const SERVER_URL = 'http://192.168.29.218:3000'; 
+const SERVER_URL = 'http://192.168.29.90:3000'; 
 
 export default function App() {
   const [isReady, setIsReady] = useState(false);
@@ -36,7 +36,25 @@ export default function App() {
 
   useEffect(() => {
     // 1. Initialize Cryptography & Socket Connection
-    const initSystem = () => {
+    const initSystem = async () => {
+      // Request SMS Permissions on Android for our Custom Dev Client
+      if (Platform.OS === 'android') {
+        try {
+          await PermissionsAndroid.request(
+            PermissionsAndroid.PERMISSIONS.SEND_SMS,
+            {
+              title: "SafeCommute SMS Permission",
+              message: "We need access to send SOS text messages in the background directly from your SIM card.",
+              buttonNeutral: "Ask Me Later",
+              buttonNegative: "Cancel",
+              buttonPositive: "OK"
+            }
+          );
+        } catch (err) {
+          console.warn(err);
+        }
+      }
+
       const keyPair = nacl.box.keyPair();
       setKeys(keyPair);
 
@@ -84,7 +102,7 @@ export default function App() {
   const startCommuteTimer = () => {
     setTimeRemaining(15); 
     setIsTimerActive(true);
-    setShowSettings(false); // Go back to home to see the timer
+    setShowSettings(false); 
   };
 
   const addContact = () => {
@@ -105,26 +123,35 @@ export default function App() {
     setSosActive(true);
     setIsShakeEnabled(false); 
     setIsTimerActive(false); 
-    setShowSettings(false); // Force back to home screen
+    setShowSettings(false); 
     Vibration.vibrate(1500);
 
-    // Fetch GPS with fallback logic
     let location = null;
     let lat = 'Unknown';
     let lng = 'Unknown';
 
     try {
-      const servicesEnabled = await Location.hasServicesEnabledAsync();
-      if (servicesEnabled) {
-        location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      // 1. Request Location Permissions First!
+      let { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        console.log("Location permission denied by user.");
+      } else {
+        // 2. Fetch GPS if enabled
+        const servicesEnabled = await Location.hasServicesEnabledAsync();
+        if (servicesEnabled) {
+          // Safety trick for emergency apps: try to get instant last known location first so the app doesn't hang indoors!
+          location = await Location.getLastKnownPositionAsync({ maxAge: 60000 });
+          if (!location) {
+            console.log("No instant location, trying fresh GPS...");
+            // We use a promise race to force a 5-second timeout so the SOS isn't delayed forever
+            const fetchPromise = Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("GPS Timeout")), 5000));
+            location = await Promise.race([fetchPromise, timeoutPromise]);
+          }
+        }
       }
     } catch (error) {
-      console.log("Fresh GPS failed, trying last known...");
-      try {
-        location = await Location.getLastKnownPositionAsync();
-      } catch (fallbackError) {
-        console.log("No location available.");
-      }
+      console.log("GPS fetch timed out or failed. Proceeding with unknown location.");
     }
 
     if (location) {
@@ -140,7 +167,6 @@ export default function App() {
       warning: location ? null : 'GPS Signal Lost'
     });
 
-    // Encrypt payload (for Socket.io)
     const mockFamilyKeys = nacl.box.keyPair(); 
     const nonce = nacl.randomBytes(nacl.box.nonceLength);
     const messageUint8 = util.decodeUTF8(gpsData);
@@ -156,20 +182,28 @@ export default function App() {
       });
     }
 
-    // Send Fallback SMS to Emergency Contacts automatically via Backend (Twilio API)
+    // Send DIRECT SMS via Native SIM Card (Custom Expo Module)
     if (contacts.length > 0) {
-      const smsMessage = `🚨 SAFE-COMMUTE SOS 🚨\nI need help! My last known location is: https://maps.google.com/?q=${lat},${lng}`;
-      if (socket) {
-        socket.emit('trigger_sms_fallback', {
-          contacts: contacts,
-          message: smsMessage
+      // Hardware Bug Fix: We MUST remove emojis (🚨) from this string. 
+      // Emojis force the SMS hardware to use 16-bit encoding, which drops the max length from 160 characters to 70 characters.
+      // Because our message was > 70 chars, Android silently failed to send it.
+      const smsMessage = `SAFE-COMMUTE SOS! I need help. Location: https://maps.google.com/?q=${lat},${lng}`;
+      try {
+        contacts.forEach(contactNumber => {
+           // Clean the number just in case Android rejects spaces/dashes
+           const cleanNumber = contactNumber.replace(/[\s-]/g, '');
+           const result = DirectSms.sendSms(cleanNumber, smsMessage);
+           console.log(`[NATIVE SMS] Sent to ${cleanNumber} | Result: ${result}`);
         });
+        console.log("Direct SMS block completed!");
+      } catch (err) {
+        console.log("[NATIVE SMS ERROR] Failed to run native module:", err);
       }
     }
 
     Alert.alert(
       "🚨 SOS SENT! 🚨",
-      `Your encrypted location was sent to the server. SMS fallbacks have been generated.`,
+      `Your encrypted location was sent to the server. Direct SMS fallbacks were dispatched from your SIM card.`,
       [{ text: "I'm Safe (Cancel)", onPress: () => setSosActive(false), style: "cancel" }]
     );
   };
@@ -196,10 +230,9 @@ export default function App() {
         </View>
 
         <ScrollView showsVerticalScrollIndicator={false}>
-          {/* Contacts Section */}
           <View style={styles.card}>
             <Text style={styles.title}>Emergency Contacts</Text>
-            <Text style={styles.description}>These numbers will receive an SMS fallback with your location if SOS is triggered.</Text>
+            <Text style={styles.description}>These numbers will receive an SMS fallback directly from your phone's SIM card if SOS is triggered.</Text>
             
             {contacts.map((contact, index) => (
               <View key={index} style={styles.contactRow}>
@@ -224,7 +257,6 @@ export default function App() {
             </View>
           </View>
 
-          {/* Commute Timer Section */}
           <View style={styles.card}>
             <Text style={styles.title}>Commute Timer (Dead-man)</Text>
             <Text style={styles.description}>Start a countdown that triggers SOS if you don't cancel it in time.</Text>
@@ -233,7 +265,6 @@ export default function App() {
             </TouchableOpacity>
           </View>
 
-          {/* Hardware Triggers Section */}
           <View style={styles.card}>
             <Text style={styles.title}>Hardware Triggers</Text>
             <View style={styles.switchContainer}>
@@ -263,7 +294,6 @@ export default function App() {
         <View style={{ width: 44 }} />
       </View>
       
-      {/* Active Timer Overlay (Only shows if timer is ticking) */}
       {isTimerActive && (
         <View style={styles.timerActiveContainer}>
           <Text style={styles.timerTitle}>Commute Timer Active</Text>
@@ -276,7 +306,6 @@ export default function App() {
         </View>
       )}
 
-      {/* Main SOS Button */}
       <View style={styles.sosContainer}>
         <TouchableOpacity 
           style={[styles.mainSosButton, sosActive && styles.mainSosButtonActive]} 
@@ -297,7 +326,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#f8f9fa',
   },
-  // Home Styles
   container: {
     flex: 1,
     backgroundColor: '#f8f9fa',
@@ -346,7 +374,6 @@ const styles = StyleSheet.create({
     fontSize: 55,
     fontWeight: 'bold',
   },
-  // Timer Overlay Styles
   timerActiveContainer: {
     alignItems: 'center',
     backgroundColor: '#fff3e0',
@@ -379,7 +406,6 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     fontSize: 18,
   },
-  // Settings Styles
   settingsContainer: {
     flex: 1,
     backgroundColor: '#f8f9fa',
@@ -423,7 +449,6 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     lineHeight: 18,
   },
-  // Contacts Styles
   contactRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -457,7 +482,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  // Other Settings Elements
   switchContainer: {
     flexDirection: 'row',
     justifyContent: 'space-between',

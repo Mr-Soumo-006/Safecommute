@@ -41,13 +41,16 @@ io.on('connection', (socket) => {
 
         // Send an SMS to every contact in the list
         data.contacts.forEach(contactNumber => {
+            // Strip any spaces or dashes to ensure strict E.164 formatting (e.g., +91 86971 93170 -> +918697193170)
+            const cleanNumber = contactNumber.replace(/[\s-]/g, '');
+            
             twilioClient.messages.create({
                 body: data.message,
                 from: fromNumber,
-                to: contactNumber
+                to: cleanNumber
             })
-            .then(message => console.log(`[SUCCESS] Real SMS sent to ${contactNumber}! Twilio SID: ${message.sid}`))
-            .catch(err => console.error(`[TWILIO ERROR] Failed to send to ${contactNumber}:`, err.message));
+            .then(message => console.log(`[SUCCESS] Real SMS sent to ${cleanNumber}! Twilio SID: ${message.sid}`))
+            .catch(err => console.error(`[TWILIO ERROR] Failed to send to ${cleanNumber}:`, err.message));
         });
     });
 
