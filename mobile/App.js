@@ -3,6 +3,9 @@ import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, Switch, Alert, Vibration, TouchableOpacity, ActivityIndicator, ScrollView, TextInput, KeyboardAvoidingView, Platform, PermissionsAndroid } from 'react-native';
 import { Accelerometer } from 'expo-sensors';
 import * as Location from 'expo-location';
+// Using the legacy API to fix the new Expo SDK deprecation for the contact picker
+import * as Contacts from 'expo-contacts/legacy';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { io } from 'socket.io-client';
 import nacl from 'tweetnacl';
@@ -16,6 +19,9 @@ export default function App() {
   const [isReady, setIsReady] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   
+  // User Identity
+  const [username, setUsername] = useState('');
+
   // Triggers & State
   const [isShakeEnabled, setIsShakeEnabled] = useState(false);
   const [sosActive, setSosActive] = useState(false);
@@ -24,9 +30,10 @@ export default function App() {
   const [isTimerActive, setIsTimerActive] = useState(false);
   const [timeRemaining, setTimeRemaining] = useState(0);
 
-  // Contacts State
+  // Contacts State (Array of Objects: { id, name, number })
   const [contacts, setContacts] = useState([]);
-  const [newContact, setNewContact] = useState('');
+  const [manualName, setManualName] = useState('');
+  const [manualNumber, setManualNumber] = useState('');
 
   // Networking & Crypto
   const [socket, setSocket] = useState(null);
@@ -35,9 +42,20 @@ export default function App() {
   const SHAKE_THRESHOLD = 3.0;
 
   useEffect(() => {
-    // 1. Initialize Cryptography & Socket Connection
+    // 1. Initialize System & Load Saved Data
     const initSystem = async () => {
-      // Request SMS Permissions on Android for our Custom Dev Client
+      // Load saved username and contacts from local database
+      try {
+        const savedUsername = await AsyncStorage.getItem('@username');
+        if (savedUsername) setUsername(savedUsername);
+
+        const savedContacts = await AsyncStorage.getItem('@contacts');
+        if (savedContacts) setContacts(JSON.parse(savedContacts));
+      } catch (err) {
+        console.warn("Failed to load local storage data");
+      }
+
+      // Request SMS Permissions on Android
       if (Platform.OS === 'android') {
         try {
           await PermissionsAndroid.request(
@@ -99,22 +117,63 @@ export default function App() {
     return () => clearInterval(interval);
   }, [isTimerActive, timeRemaining]);
 
-  const startCommuteTimer = () => {
-    setTimeRemaining(15); 
-    setIsTimerActive(true);
-    setShowSettings(false); 
+  // --- SAVE FUNCTIONS ---
+  const saveUsername = async (text) => {
+    setUsername(text);
+    await AsyncStorage.setItem('@username', text);
   };
 
-  const addContact = () => {
-    if (newContact.trim() === '') return;
-    setContacts([...contacts, newContact.trim()]);
-    setNewContact('');
+  const saveContactsData = async (newContactsArray) => {
+    setContacts(newContactsArray);
+    await AsyncStorage.setItem('@contacts', JSON.stringify(newContactsArray));
   };
 
-  const removeContact = (index) => {
-    const updated = [...contacts];
-    updated.splice(index, 1);
-    setContacts(updated);
+  // --- CONTACT MANAGEMENT ---
+  const pickContactFromPhonebook = async () => {
+    const { status } = await Contacts.requestPermissionsAsync();
+    if (status === 'granted') {
+      try {
+        const contact = await Contacts.presentContactPickerAsync();
+        if (contact && contact.phoneNumbers && contact.phoneNumbers.length > 0) {
+          // Check for duplicates
+          const num = contact.phoneNumbers[0].number;
+          if (contacts.some(c => c.number === num)) {
+            Alert.alert("Already Added", "This contact is already in your emergency list.");
+            return;
+          }
+
+          const newContact = {
+            id: Date.now().toString(),
+            name: contact.name || 'Unknown',
+            number: num
+          };
+          saveContactsData([...contacts, newContact]);
+        } else if (contact) {
+          Alert.alert("No Phone Number", "This contact does not have a phone number saved.");
+        }
+      } catch (err) {
+        console.warn("Picker failed:", err);
+      }
+    } else {
+      Alert.alert("Permission Denied", "We need contacts permission to pick a contact.");
+    }
+  };
+
+  const addManualContact = () => {
+    if (manualNumber.trim() === '') return;
+    const newContact = {
+      id: Date.now().toString(),
+      name: manualName.trim() || 'Manual Entry',
+      number: manualNumber.trim()
+    };
+    saveContactsData([...contacts, newContact]);
+    setManualName('');
+    setManualNumber('');
+  };
+
+  const removeContact = (idToRemove) => {
+    const updated = contacts.filter(c => c.id !== idToRemove);
+    saveContactsData(updated);
   };
 
   // 4. The Core SOS Action
@@ -131,19 +190,15 @@ export default function App() {
     let lng = 'Unknown';
 
     try {
-      // 1. Request Location Permissions First!
       let { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
         console.log("Location permission denied by user.");
       } else {
-        // 2. Fetch GPS if enabled
         const servicesEnabled = await Location.hasServicesEnabledAsync();
         if (servicesEnabled) {
-          // Safety trick for emergency apps: try to get instant last known location first so the app doesn't hang indoors!
           location = await Location.getLastKnownPositionAsync({ maxAge: 60000 });
           if (!location) {
             console.log("No instant location, trying fresh GPS...");
-            // We use a promise race to force a 5-second timeout so the SOS isn't delayed forever
             const fetchPromise = Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
             const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("GPS Timeout")), 5000));
             location = await Promise.race([fetchPromise, timeoutPromise]);
@@ -184,14 +239,12 @@ export default function App() {
 
     // Send DIRECT SMS via Native SIM Card (Custom Expo Module)
     if (contacts.length > 0) {
-      // Hardware Bug Fix: We MUST remove emojis (🚨) from this string. 
-      // Emojis force the SMS hardware to use 16-bit encoding, which drops the max length from 160 characters to 70 characters.
-      // Because our message was > 70 chars, Android silently failed to send it.
-      const smsMessage = `SAFE-COMMUTE SOS! I need help. Location: https://maps.google.com/?q=${lat},${lng}`;
+      const senderName = username.trim() !== '' ? username.trim() : 'A SafeCommute User';
+      const smsMessage = `${senderName} sent an SOS! I need help. Location: https://maps.google.com/?q=${lat},${lng}`;
       try {
-        contacts.forEach(contactNumber => {
+        contacts.forEach(contactObj => {
            // Clean the number just in case Android rejects spaces/dashes
-           const cleanNumber = contactNumber.replace(/[\s-]/g, '');
+           const cleanNumber = contactObj.number.replace(/[\s-()]/g, '');
            const result = DirectSms.sendSms(cleanNumber, smsMessage);
            console.log(`[NATIVE SMS] Sent to ${cleanNumber} | Result: ${result}`);
         });
@@ -212,7 +265,7 @@ export default function App() {
     return (
       <View style={styles.centerContainer}>
         <ActivityIndicator size="large" color="#f44336" />
-        <Text style={{marginTop: 10}}>Initializing Encrypted Security Engine...</Text>
+        <Text style={{marginTop: 10, color: '#555', fontWeight: '500'}}>Initializing Security Engine...</Text>
       </View>
     );
   }
@@ -230,45 +283,92 @@ export default function App() {
         </View>
 
         <ScrollView showsVerticalScrollIndicator={false}>
+          
+          {/* PROFILE CARD */}
+          <View style={styles.card}>
+            <Text style={styles.title}>Profile Information</Text>
+            <Text style={styles.description}>Your name will be included in the emergency SMS so your contacts know it's you.</Text>
+            <View style={styles.inputGroup}>
+              <Ionicons name="person-outline" size={20} color="#7f8c8d" style={styles.inputIcon} />
+              <TextInput 
+                style={styles.textInput} 
+                placeholder="Enter your full name" 
+                value={username}
+                onChangeText={saveUsername}
+              />
+            </View>
+          </View>
+
+          {/* EMERGENCY CONTACTS CARD */}
           <View style={styles.card}>
             <Text style={styles.title}>Emergency Contacts</Text>
-            <Text style={styles.description}>These numbers will receive an SMS fallback directly from your phone's SIM card if SOS is triggered.</Text>
+            <Text style={styles.description}>These people will receive your SOS text message via your physical SIM card.</Text>
             
-            {contacts.map((contact, index) => (
-              <View key={index} style={styles.contactRow}>
-                <Text style={styles.contactText}>{contact}</Text>
-                <TouchableOpacity onPress={() => removeContact(index)}>
-                  <Ionicons name="trash-outline" size={24} color="#f44336" />
+            <TouchableOpacity style={styles.phonebookBtn} onPress={pickContactFromPhonebook}>
+              <Ionicons name="journal-outline" size={20} color="#fff" />
+              <Text style={styles.phonebookBtnText}>Select from Phonebook</Text>
+            </TouchableOpacity>
+
+            <View style={styles.divider} />
+
+            {contacts.map((contact) => (
+              <View key={contact.id} style={styles.contactRow}>
+                <View style={styles.contactDetails}>
+                  <Text style={styles.contactName}>{contact.name}</Text>
+                  <Text style={styles.contactNumber}>{contact.number}</Text>
+                </View>
+                <TouchableOpacity style={styles.deleteContactBtn} onPress={() => removeContact(contact.id)}>
+                  <Ionicons name="close-circle" size={24} color="#f44336" />
                 </TouchableOpacity>
               </View>
             ))}
 
-            <View style={styles.addContactRow}>
-              <TextInput 
-                style={styles.input} 
-                placeholder="Phone Number (e.g. +91 9876543210)" 
-                keyboardType="phone-pad"
-                value={newContact}
-                onChangeText={setNewContact}
-              />
-              <TouchableOpacity style={styles.addButton} onPress={addContact}>
+            {contacts.length === 0 && (
+              <Text style={styles.emptyContactsText}>No contacts added yet.</Text>
+            )}
+
+            <View style={styles.divider} />
+            <Text style={styles.subTitle}>Or Add Manually:</Text>
+            <View style={styles.manualAddRow}>
+              <View style={styles.manualInputCol}>
+                <TextInput 
+                  style={[styles.input, {marginBottom: 8}]} 
+                  placeholder="Name (e.g. Mom)" 
+                  value={manualName}
+                  onChangeText={setManualName}
+                />
+                <TextInput 
+                  style={styles.input} 
+                  placeholder="Phone (e.g. +91 9876543210)" 
+                  keyboardType="phone-pad"
+                  value={manualNumber}
+                  onChangeText={setManualNumber}
+                />
+              </View>
+              <TouchableOpacity style={styles.addButton} onPress={addManualContact}>
                 <Ionicons name="add" size={24} color="#fff" />
               </TouchableOpacity>
             </View>
           </View>
 
+          {/* TIMER CARD */}
           <View style={styles.card}>
             <Text style={styles.title}>Commute Timer (Dead-man)</Text>
-            <Text style={styles.description}>Start a countdown that triggers SOS if you don't cancel it in time.</Text>
-            <TouchableOpacity style={styles.startTimerBtn} onPress={startCommuteTimer}>
+            <Text style={styles.description}>Start a countdown that triggers SOS automatically if you don't cancel it in time.</Text>
+            <TouchableOpacity style={styles.startTimerBtn} onPress={() => { setTimeRemaining(15); setIsTimerActive(true); setShowSettings(false); }}>
+              <Ionicons name="timer-outline" size={20} color="#fff" style={{marginRight: 8}} />
               <Text style={styles.startTimerText}>Start 15s Test Timer</Text>
             </TouchableOpacity>
           </View>
 
+          {/* HARDWARE TRIGGERS CARD */}
           <View style={styles.card}>
             <Text style={styles.title}>Hardware Triggers</Text>
             <View style={styles.switchContainer}>
-              <Text style={styles.switchLabel}>Shake-to-Alert {isShakeEnabled ? "(Armed)" : "(Safe)"}</Text>
+              <View>
+                <Text style={styles.switchLabel}>Shake-to-Alert</Text>
+                <Text style={styles.switchSubLabel}>{isShakeEnabled ? "Armed & Active" : "Safe Mode"}</Text>
+              </View>
               <Switch
                 trackColor={{ false: "#767577", true: "#f44336" }}
                 thumbColor={isShakeEnabled ? "#fff" : "#f4f3f4"}
@@ -277,6 +377,7 @@ export default function App() {
               />
             </View>
           </View>
+          <View style={{height: 40}}/>
         </ScrollView>
       </KeyboardAvoidingView>
     );
@@ -287,11 +388,13 @@ export default function App() {
     <View style={styles.container}>
       
       <View style={styles.homeHeaderRow}>
+        <View>
+          <Text style={styles.logoText}>SafeCommute</Text>
+          {username ? <Text style={styles.welcomeText}>Hello, {username}</Text> : null}
+        </View>
         <TouchableOpacity style={styles.settingsBtn} onPress={() => setShowSettings(true)}>
           <Ionicons name="settings-sharp" size={24} color="#fff" />
         </TouchableOpacity>
-        <Text style={styles.logoText}>SafeCommute</Text>
-        <View style={{ width: 44 }} />
       </View>
       
       {isTimerActive && (
@@ -312,8 +415,9 @@ export default function App() {
           onPress={() => triggerSOS('Manual Button')}
           activeOpacity={0.8}
         >
-          <Text style={styles.mainSosButtonText}>{sosActive ? "SOS SENT" : "SOS"}</Text>
+          <Text style={styles.mainSosButtonText}>{sosActive ? "SENT!" : "SOS"}</Text>
         </TouchableOpacity>
+        <Text style={styles.sosHint}>Tap instantly to broadcast emergency</Text>
       </View>
     </View>
   );
@@ -324,29 +428,41 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#f8f9fa',
+    backgroundColor: '#F4F7FC',
   },
   container: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
-    paddingTop: 50,
+    backgroundColor: '#F4F7FC',
+    paddingTop: 60,
   },
   homeHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 20,
+    paddingHorizontal: 25,
     marginBottom: 20,
   },
   logoText: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#333',
+    fontSize: 28,
+    fontWeight: '900',
+    color: '#1A2530',
+    letterSpacing: -0.5,
+  },
+  welcomeText: {
+    fontSize: 14,
+    color: '#7F8FA4',
+    marginTop: 2,
+    fontWeight: '500',
   },
   settingsBtn: {
-    backgroundColor: '#2196F3',
-    padding: 10,
-    borderRadius: 25,
+    backgroundColor: '#1A2530',
+    padding: 12,
+    borderRadius: 30,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    elevation: 5,
   },
   sosContainer: {
     flex: 1,
@@ -354,156 +470,280 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   mainSosButton: {
-    width: 250,
-    height: 250,
-    backgroundColor: '#f44336',
-    borderRadius: 125,
+    width: 240,
+    height: 240,
+    backgroundColor: '#FF3B30',
+    borderRadius: 120,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#f44336',
-    shadowOffset: { width: 0, height: 10 },
+    shadowColor: '#FF3B30',
+    shadowOffset: { width: 0, height: 15 },
     shadowOpacity: 0.4,
-    shadowRadius: 15,
-    elevation: 12,
+    shadowRadius: 20,
+    elevation: 15,
+    borderWidth: 6,
+    borderColor: '#FFD7D5',
   },
   mainSosButtonActive: {
-    backgroundColor: '#d32f2f',
+    backgroundColor: '#D32F2F',
+    borderColor: '#FFCDD2',
+    transform: [{ scale: 0.95 }],
   },
   mainSosButtonText: {
     color: 'white',
-    fontSize: 55,
-    fontWeight: 'bold',
+    fontSize: 60,
+    fontWeight: '900',
+    letterSpacing: 2,
+  },
+  sosHint: {
+    marginTop: 30,
+    color: '#7F8FA4',
+    fontSize: 14,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
   },
   timerActiveContainer: {
     alignItems: 'center',
-    backgroundColor: '#fff3e0',
-    padding: 20,
-    marginHorizontal: 20,
-    borderRadius: 15,
+    backgroundColor: '#FFF8E1',
+    padding: 25,
+    marginHorizontal: 25,
+    borderRadius: 20,
     borderWidth: 2,
-    borderColor: '#ff9800',
-    marginTop: 20,
+    borderColor: '#FFB300',
+    marginTop: 10,
+    shadowColor: '#FFB300',
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 5,
   },
   timerTitle: {
-    fontSize: 16,
-    color: '#ff9800',
-    fontWeight: '600',
+    fontSize: 14,
+    color: '#FF8F00',
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
   },
   timerText: {
-    fontSize: 55,
-    fontWeight: 'bold',
-    color: '#ff9800',
+    fontSize: 60,
+    fontWeight: '900',
+    color: '#FFB300',
     marginVertical: 10,
   },
   cancelTimerBtn: {
-    backgroundColor: '#4CAF50',
-    paddingVertical: 15,
+    backgroundColor: '#34C759',
+    paddingVertical: 16,
     paddingHorizontal: 40,
-    borderRadius: 10,
+    borderRadius: 30,
+    shadowColor: '#34C759',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+    elevation: 4,
   },
   cancelTimerText: {
     color: 'white',
-    fontWeight: 'bold',
-    fontSize: 18,
+    fontWeight: '800',
+    fontSize: 16,
+    textTransform: 'uppercase',
   },
   settingsContainer: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
-    paddingTop: 50,
+    backgroundColor: '#F4F7FC',
+    paddingTop: 60,
     paddingHorizontal: 20,
   },
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 25,
+    marginBottom: 20,
   },
   header: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#333',
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#1A2530',
   },
   iconButton: {
     padding: 5,
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+    elevation: 2,
   },
   card: {
     backgroundColor: 'white',
-    padding: 20,
-    borderRadius: 15,
+    padding: 22,
+    borderRadius: 20,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 4,
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+    elevation: 3,
     marginBottom: 20,
   },
   title: {
     fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 8,
-    color: '#2c3e50',
+    fontWeight: '800',
+    marginBottom: 6,
+    color: '#1A2530',
+  },
+  subTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#1A2530',
+    marginBottom: 10,
   },
   description: {
     fontSize: 13,
-    color: '#7f8c8d',
-    marginBottom: 15,
+    color: '#7F8FA4',
+    marginBottom: 18,
     lineHeight: 18,
+  },
+  inputGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 12,
+    paddingHorizontal: 15,
+    height: 50,
+  },
+  inputIcon: {
+    marginRight: 10,
+  },
+  textInput: {
+    flex: 1,
+    fontSize: 16,
+    color: '#1A2530',
+    fontWeight: '500',
+  },
+  phonebookBtn: {
+    flexDirection: 'row',
+    backgroundColor: '#007AFF',
+    padding: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 15,
+  },
+  phonebookBtnText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '700',
+    marginLeft: 8,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: '#E2E8F0',
+    marginVertical: 15,
   },
   contactRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#f1f2f6',
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
     padding: 12,
-    borderRadius: 8,
+    borderRadius: 12,
     marginBottom: 10,
   },
-  contactText: {
-    fontSize: 16,
-    color: '#2f3542',
-  },
-  addContactRow: {
-    flexDirection: 'row',
-    marginTop: 10,
-  },
-  input: {
+  contactDetails: {
     flex: 1,
-    backgroundColor: '#f1f2f6',
-    borderRadius: 8,
-    paddingHorizontal: 15,
-    height: 45,
+  },
+  contactName: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#1A2530',
+  },
+  contactNumber: {
+    fontSize: 13,
+    color: '#7F8FA4',
+    marginTop: 2,
+    fontWeight: '500',
+  },
+  deleteContactBtn: {
+    padding: 5,
+  },
+  emptyContactsText: {
+    textAlign: 'center',
+    color: '#A0AABF',
+    fontStyle: 'italic',
+    marginBottom: 10,
+  },
+  manualAddRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+  manualInputCol: {
+    flex: 1,
     marginRight: 10,
   },
-  addButton: {
-    backgroundColor: '#2196F3',
-    width: 45,
-    height: 45,
+  input: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
     borderRadius: 8,
+    paddingHorizontal: 12,
+    height: 40,
+    fontSize: 14,
+    color: '#1A2530',
+  },
+  addButton: {
+    backgroundColor: '#34C759',
+    width: 50,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#34C759',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
   },
   switchContainer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#f1f2f6',
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
     padding: 15,
-    borderRadius: 8,
+    borderRadius: 12,
   },
   switchLabel: {
-    fontSize: 15,
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1A2530',
+  },
+  switchSubLabel: {
+    fontSize: 12,
+    color: '#7F8FA4',
+    marginTop: 2,
     fontWeight: '600',
-    color: '#333',
   },
   startTimerBtn: {
-    backgroundColor: '#2196F3',
+    flexDirection: 'row',
+    backgroundColor: '#FF9500',
     padding: 15,
-    borderRadius: 8,
+    borderRadius: 12,
     alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#FF9500',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 4,
   },
   startTimerText: {
     color: 'white',
-    fontWeight: 'bold',
-    fontSize: 15,
+    fontWeight: '700',
+    fontSize: 16,
   },
 });
