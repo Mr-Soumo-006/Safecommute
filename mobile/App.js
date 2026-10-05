@@ -3,8 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, Switch, Alert, Vibration, TouchableOpacity, ActivityIndicator, ScrollView, TextInput, KeyboardAvoidingView, Platform, PermissionsAndroid } from 'react-native';
 import { Accelerometer } from 'expo-sensors';
 import * as Location from 'expo-location';
-// Using the legacy API to fix the new Expo SDK deprecation for the contact picker
-import * as Contacts from 'expo-contacts/legacy';
+import * as Contacts from 'expo-contacts';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { io } from 'socket.io-client';
@@ -50,9 +49,17 @@ export default function App() {
         if (savedUsername) setUsername(savedUsername);
 
         const savedContacts = await AsyncStorage.getItem('@contacts');
-        if (savedContacts) setContacts(JSON.parse(savedContacts));
+        if (savedContacts) {
+          let parsed = JSON.parse(savedContacts);
+          // Safety fallback: if they are old strings from yesterday, upgrade them to objects
+          parsed = parsed.map((c, i) => {
+            if (typeof c === 'string') return { id: Date.now().toString() + i, name: 'Legacy Contact', number: c };
+            return c;
+          });
+          setContacts(parsed);
+        }
       } catch (err) {
-        console.warn("Failed to load local storage data");
+        console.warn("Failed to load local storage data", err);
       }
 
       // Request SMS Permissions on Android
@@ -176,6 +183,18 @@ export default function App() {
     saveContactsData(updated);
   };
 
+  // Live Location Tracker State
+  const [locationWatcher, setLocationWatcher] = useState(null);
+
+  const cancelSOS = () => {
+    setSosActive(false);
+    if (locationWatcher) {
+      locationWatcher.remove();
+      setLocationWatcher(null);
+      console.log("Live tracking stopped.");
+    }
+  };
+
   // 4. The Core SOS Action
   const triggerSOS = async (source) => {
     if (sosActive) return;
@@ -214,7 +233,10 @@ export default function App() {
       lng = location.coords.longitude;
     }
 
-    const gpsData = JSON.stringify({
+    const mockFamilyKeys = nacl.box.keyPair(); 
+    
+    // --- 1. SEND INITIAL ONE-TIME ALERTS ---
+    const initialGpsData = JSON.stringify({
       lat: lat,
       lng: lng,
       timestamp: Date.now(),
@@ -222,9 +244,8 @@ export default function App() {
       warning: location ? null : 'GPS Signal Lost'
     });
 
-    const mockFamilyKeys = nacl.box.keyPair(); 
     const nonce = nacl.randomBytes(nacl.box.nonceLength);
-    const messageUint8 = util.decodeUTF8(gpsData);
+    const messageUint8 = util.decodeUTF8(initialGpsData);
     const ciphertext = nacl.box(messageUint8, nonce, mockFamilyKeys.publicKey, keys.secretKey);
 
     // Send encrypted data to Blind Relay via Socket.io
@@ -237,16 +258,14 @@ export default function App() {
       });
     }
 
-    // Send DIRECT SMS via Native SIM Card (Custom Expo Module)
+    // Send DIRECT SMS via Native SIM Card (Custom Expo Module) - Only done once!
     if (contacts.length > 0) {
       const senderName = username.trim() !== '' ? username.trim() : 'A SafeCommute User';
       const smsMessage = `${senderName} sent an SOS! I need help. Location: https://maps.google.com/?q=${lat},${lng}`;
       try {
         contacts.forEach(contactObj => {
-           // Clean the number just in case Android rejects spaces/dashes
            const cleanNumber = contactObj.number.replace(/[\s-()]/g, '');
-           const result = DirectSms.sendSms(cleanNumber, smsMessage);
-           console.log(`[NATIVE SMS] Sent to ${cleanNumber} | Result: ${result}`);
+           DirectSms.sendSms(cleanNumber, smsMessage);
         });
         console.log("Direct SMS block completed!");
       } catch (err) {
@@ -254,10 +273,50 @@ export default function App() {
       }
     }
 
+    // --- 2. START CONTINUOUS LIVE TRACKING ---
+    try {
+      const watcher = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.High,
+          timeInterval: 5000, // Update every 5 seconds
+          distanceInterval: 5, // Or every 5 meters
+        },
+        (newLocation) => {
+          const liveLat = newLocation.coords.latitude;
+          const liveLng = newLocation.coords.longitude;
+          
+          const liveGpsData = JSON.stringify({
+            lat: liveLat,
+            lng: liveLng,
+            timestamp: Date.now(),
+            triggerSource: 'Live Tracking Update',
+            isLive: true
+          });
+
+          const liveNonce = nacl.randomBytes(nacl.box.nonceLength);
+          const liveMessageUint8 = util.decodeUTF8(liveGpsData);
+          const liveCiphertext = nacl.box(liveMessageUint8, liveNonce, mockFamilyKeys.publicKey, keys.secretKey);
+
+          if (socket) {
+            socket.emit('encrypted_alert', {
+              targetContactId: 'family_123',
+              gridSector: 'Sector_42B',
+              ciphertext: util.encodeBase64(liveCiphertext),
+              nonce: util.encodeBase64(liveNonce)
+            });
+            console.log("Live location update sent to server!");
+          }
+        }
+      );
+      setLocationWatcher(watcher);
+    } catch (err) {
+      console.log("Could not start live tracking", err);
+    }
+
     Alert.alert(
       "🚨 SOS SENT! 🚨",
-      `Your encrypted location was sent to the server. Direct SMS fallbacks were dispatched from your SIM card.`,
-      [{ text: "I'm Safe (Cancel)", onPress: () => setSosActive(false), style: "cancel" }]
+      `Your encrypted live location is now streaming to the server. Direct SMS fallbacks were dispatched.`,
+      [{ text: "I'm Safe (Cancel)", onPress: cancelSOS, style: "cancel" }]
     );
   };
 
