@@ -3,7 +3,9 @@ import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, Switch, Alert, Vibration, TouchableOpacity, ActivityIndicator, ScrollView, TextInput, KeyboardAvoidingView, Platform, PermissionsAndroid } from 'react-native';
 import { Accelerometer } from 'expo-sensors';
 import * as Location from 'expo-location';
-import * as Contacts from 'expo-contacts';
+import * as Battery from 'expo-battery';
+import { useAudioPlayer } from 'expo-audio';
+import * as Contacts from 'expo-contacts/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { io } from 'socket.io-client';
@@ -25,6 +27,10 @@ export default function App() {
   const [isShakeEnabled, setIsShakeEnabled] = useState(false);
   const [sosActive, setSosActive] = useState(false);
   
+  // Siren State & Player
+  const [isSirenEnabled, setIsSirenEnabled] = useState(false);
+  const sirenPlayer = useAudioPlayer(require('./assets/siren.ogg'));
+  
   // Timer State
   const [isTimerActive, setIsTimerActive] = useState(false);
   const [timeRemaining, setTimeRemaining] = useState(0);
@@ -43,15 +49,16 @@ export default function App() {
   useEffect(() => {
     // 1. Initialize System & Load Saved Data
     const initSystem = async () => {
-      // Load saved username and contacts from local database
       try {
         const savedUsername = await AsyncStorage.getItem('@username');
         if (savedUsername) setUsername(savedUsername);
 
+        const savedSiren = await AsyncStorage.getItem('@siren');
+        if (savedSiren !== null) setIsSirenEnabled(JSON.parse(savedSiren));
+
         const savedContacts = await AsyncStorage.getItem('@contacts');
         if (savedContacts) {
           let parsed = JSON.parse(savedContacts);
-          // Safety fallback: if they are old strings from yesterday, upgrade them to objects
           parsed = parsed.map((c, i) => {
             if (typeof c === 'string') return { id: Date.now().toString() + i, name: 'Legacy Contact', number: c };
             return c;
@@ -62,7 +69,6 @@ export default function App() {
         console.warn("Failed to load local storage data", err);
       }
 
-      // Request SMS Permissions on Android
       if (Platform.OS === 'android') {
         try {
           await PermissionsAndroid.request(
@@ -142,13 +148,11 @@ export default function App() {
       try {
         const contact = await Contacts.presentContactPickerAsync();
         if (contact && contact.phoneNumbers && contact.phoneNumbers.length > 0) {
-          // Check for duplicates
           const num = contact.phoneNumbers[0].number;
           if (contacts.some(c => c.number === num)) {
             Alert.alert("Already Added", "This contact is already in your emergency list.");
             return;
           }
-
           const newContact = {
             id: Date.now().toString(),
             name: contact.name || 'Unknown',
@@ -167,10 +171,17 @@ export default function App() {
   };
 
   const addManualContact = () => {
-    if (manualNumber.trim() === '') return;
+    if (manualNumber.trim() === '') {
+      Alert.alert("Missing Information", "Please enter a phone number.");
+      return;
+    }
+    if (manualName.trim() === '') {
+      Alert.alert("Missing Information", "Please enter a name for this contact.");
+      return;
+    }
     const newContact = {
       id: Date.now().toString(),
-      name: manualName.trim() || 'Manual Entry',
+      name: manualName.trim(),
       number: manualNumber.trim()
     };
     saveContactsData([...contacts, newContact]);
@@ -186,12 +197,20 @@ export default function App() {
   // Live Location Tracker State
   const [locationWatcher, setLocationWatcher] = useState(null);
 
-  const cancelSOS = () => {
+  const cancelSOS = async () => {
     setSosActive(false);
+    
+    // Stop GPS tracking
     if (locationWatcher) {
       locationWatcher.remove();
       setLocationWatcher(null);
       console.log("Live tracking stopped.");
+    }
+    
+    // Stop Siren
+    if (sirenPlayer) {
+      sirenPlayer.pause();
+      console.log("Siren disabled.");
     }
   };
 
@@ -207,6 +226,21 @@ export default function App() {
     let location = null;
     let lat = 'Unknown';
     let lng = 'Unknown';
+    let batteryLevel = 'Unknown';
+
+    // 🚀 NEW FEATURE: Audio Alarm / Siren
+    if (isSirenEnabled && sirenPlayer) {
+      try {
+        sirenPlayer.loop = true;
+        sirenPlayer.play();
+      } catch(err) { console.log("Siren playback failed:", err) }
+    }
+
+    // 🚀 NEW FEATURE: Battery Telemetry Data
+    try {
+      const level = await Battery.getBatteryLevelAsync();
+      if (level > 0) batteryLevel = Math.round(level * 100) + '%';
+    } catch(e) { console.log("Could not fetch battery level"); }
 
     try {
       let { status } = await Location.requestForegroundPermissionsAsync();
@@ -239,6 +273,7 @@ export default function App() {
     const initialGpsData = JSON.stringify({
       lat: lat,
       lng: lng,
+      battery: batteryLevel, // Inserted Battery Data
       timestamp: Date.now(),
       triggerSource: source,
       warning: location ? null : 'GPS Signal Lost'
@@ -253,6 +288,7 @@ export default function App() {
       socket.emit('encrypted_alert', {
         targetContactId: 'family_123',
         gridSector: 'Sector_42B',
+        batteryMetadata: batteryLevel, // Unencrypted so server can see it!
         ciphertext: util.encodeBase64(ciphertext),
         nonce: util.encodeBase64(nonce)
       });
@@ -278,8 +314,8 @@ export default function App() {
       const watcher = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.High,
-          timeInterval: 5000, // Update every 5 seconds
-          distanceInterval: 5, // Or every 5 meters
+          timeInterval: 5000, 
+          distanceInterval: 5,
         },
         (newLocation) => {
           const liveLat = newLocation.coords.latitude;
@@ -288,6 +324,7 @@ export default function App() {
           const liveGpsData = JSON.stringify({
             lat: liveLat,
             lng: liveLng,
+            battery: batteryLevel, // Inside encrypted payload too
             timestamp: Date.now(),
             triggerSource: 'Live Tracking Update',
             isLive: true
@@ -301,8 +338,10 @@ export default function App() {
             socket.emit('encrypted_alert', {
               targetContactId: 'family_123',
               gridSector: 'Sector_42B',
+              batteryMetadata: batteryLevel, // Unencrypted so server can see it!
               ciphertext: util.encodeBase64(liveCiphertext),
-              nonce: util.encodeBase64(liveNonce)
+              nonce: util.encodeBase64(liveNonce),
+              isLiveUpdate: true
             });
             console.log("Live location update sent to server!");
           }
@@ -341,7 +380,7 @@ export default function App() {
           <View style={{ width: 28 }} /> 
         </View>
 
-        <ScrollView showsVerticalScrollIndicator={false}>
+        <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
           
           {/* PROFILE CARD */}
           <View style={styles.card}>
@@ -422,7 +461,26 @@ export default function App() {
 
           {/* HARDWARE TRIGGERS CARD */}
           <View style={styles.card}>
-            <Text style={styles.title}>Hardware Triggers</Text>
+            <Text style={styles.title}>Hardware Triggers & Safety</Text>
+
+            {/* SIREN TOGGLE */}
+            <View style={[styles.switchContainer, { marginBottom: 15 }]}>
+              <View>
+                <Text style={styles.switchLabel}>Loud Siren Alarm</Text>
+                <Text style={styles.switchSubLabel}>{isSirenEnabled ? "Will sound on SOS" : "Silent Mode"}</Text>
+              </View>
+              <Switch
+                trackColor={{ false: "#767577", true: "#f44336" }}
+                thumbColor={isSirenEnabled ? "#fff" : "#f4f3f4"}
+                onValueChange={(val) => {
+                  setIsSirenEnabled(val);
+                  AsyncStorage.setItem('@siren', JSON.stringify(val));
+                }}
+                value={isSirenEnabled}
+              />
+            </View>
+
+            {/* SHAKE TOGGLE */}
             <View style={styles.switchContainer}>
               <View>
                 <Text style={styles.switchLabel}>Shake-to-Alert</Text>
@@ -483,326 +541,49 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  centerContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#F4F7FC',
-  },
-  container: {
-    flex: 1,
-    backgroundColor: '#F4F7FC',
-    paddingTop: 60,
-  },
-  homeHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 25,
-    marginBottom: 20,
-  },
-  logoText: {
-    fontSize: 28,
-    fontWeight: '900',
-    color: '#1A2530',
-    letterSpacing: -0.5,
-  },
-  welcomeText: {
-    fontSize: 14,
-    color: '#7F8FA4',
-    marginTop: 2,
-    fontWeight: '500',
-  },
-  settingsBtn: {
-    backgroundColor: '#1A2530',
-    padding: 12,
-    borderRadius: 30,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 6,
-    elevation: 5,
-  },
-  sosContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  mainSosButton: {
-    width: 240,
-    height: 240,
-    backgroundColor: '#FF3B30',
-    borderRadius: 120,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#FF3B30',
-    shadowOffset: { width: 0, height: 15 },
-    shadowOpacity: 0.4,
-    shadowRadius: 20,
-    elevation: 15,
-    borderWidth: 6,
-    borderColor: '#FFD7D5',
-  },
-  mainSosButtonActive: {
-    backgroundColor: '#D32F2F',
-    borderColor: '#FFCDD2',
-    transform: [{ scale: 0.95 }],
-  },
-  mainSosButtonText: {
-    color: 'white',
-    fontSize: 60,
-    fontWeight: '900',
-    letterSpacing: 2,
-  },
-  sosHint: {
-    marginTop: 30,
-    color: '#7F8FA4',
-    fontSize: 14,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-  },
-  timerActiveContainer: {
-    alignItems: 'center',
-    backgroundColor: '#FFF8E1',
-    padding: 25,
-    marginHorizontal: 25,
-    borderRadius: 20,
-    borderWidth: 2,
-    borderColor: '#FFB300',
-    marginTop: 10,
-    shadowColor: '#FFB300',
-    shadowOffset: { width: 0, height: 5 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 5,
-  },
-  timerTitle: {
-    fontSize: 14,
-    color: '#FF8F00',
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-  },
-  timerText: {
-    fontSize: 60,
-    fontWeight: '900',
-    color: '#FFB300',
-    marginVertical: 10,
-  },
-  cancelTimerBtn: {
-    backgroundColor: '#34C759',
-    paddingVertical: 16,
-    paddingHorizontal: 40,
-    borderRadius: 30,
-    shadowColor: '#34C759',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 5,
-    elevation: 4,
-  },
-  cancelTimerText: {
-    color: 'white',
-    fontWeight: '800',
-    fontSize: 16,
-    textTransform: 'uppercase',
-  },
-  settingsContainer: {
-    flex: 1,
-    backgroundColor: '#F4F7FC',
-    paddingTop: 60,
-    paddingHorizontal: 20,
-  },
-  headerRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  header: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: '#1A2530',
-  },
-  iconButton: {
-    padding: 5,
-    backgroundColor: '#fff',
-    borderRadius: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 2,
-  },
-  card: {
-    backgroundColor: 'white',
-    padding: 22,
-    borderRadius: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 5 },
-    shadowOpacity: 0.05,
-    shadowRadius: 10,
-    elevation: 3,
-    marginBottom: 20,
-  },
-  title: {
-    fontSize: 18,
-    fontWeight: '800',
-    marginBottom: 6,
-    color: '#1A2530',
-  },
-  subTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#1A2530',
-    marginBottom: 10,
-  },
-  description: {
-    fontSize: 13,
-    color: '#7F8FA4',
-    marginBottom: 18,
-    lineHeight: 18,
-  },
-  inputGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderRadius: 12,
-    paddingHorizontal: 15,
-    height: 50,
-  },
-  inputIcon: {
-    marginRight: 10,
-  },
-  textInput: {
-    flex: 1,
-    fontSize: 16,
-    color: '#1A2530',
-    fontWeight: '500',
-  },
-  phonebookBtn: {
-    flexDirection: 'row',
-    backgroundColor: '#007AFF',
-    padding: 14,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 15,
-  },
-  phonebookBtnText: {
-    color: 'white',
-    fontSize: 16,
-    fontWeight: '700',
-    marginLeft: 8,
-  },
-  divider: {
-    height: 1,
-    backgroundColor: '#E2E8F0',
-    marginVertical: 15,
-  },
-  contactRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    padding: 12,
-    borderRadius: 12,
-    marginBottom: 10,
-  },
-  contactDetails: {
-    flex: 1,
-  },
-  contactName: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#1A2530',
-  },
-  contactNumber: {
-    fontSize: 13,
-    color: '#7F8FA4',
-    marginTop: 2,
-    fontWeight: '500',
-  },
-  deleteContactBtn: {
-    padding: 5,
-  },
-  emptyContactsText: {
-    textAlign: 'center',
-    color: '#A0AABF',
-    fontStyle: 'italic',
-    marginBottom: 10,
-  },
-  manualAddRow: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
-  },
-  manualInputCol: {
-    flex: 1,
-    marginRight: 10,
-  },
-  input: {
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    height: 40,
-    fontSize: 14,
-    color: '#1A2530',
-  },
-  addButton: {
-    backgroundColor: '#34C759',
-    width: 50,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#34C759',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  switchContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    padding: 15,
-    borderRadius: 12,
-  },
-  switchLabel: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1A2530',
-  },
-  switchSubLabel: {
-    fontSize: 12,
-    color: '#7F8FA4',
-    marginTop: 2,
-    fontWeight: '600',
-  },
-  startTimerBtn: {
-    flexDirection: 'row',
-    backgroundColor: '#FF9500',
-    padding: 15,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#FF9500',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-    elevation: 4,
-  },
-  startTimerText: {
-    color: 'white',
-    fontWeight: '700',
-    fontSize: 16,
-  },
+  centerContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F4F7FC' },
+  container: { flex: 1, backgroundColor: '#F4F7FC', paddingTop: 60 },
+  homeHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 25, marginBottom: 20 },
+  logoText: { fontSize: 28, fontWeight: '900', color: '#1A2530', letterSpacing: -0.5 },
+  welcomeText: { fontSize: 14, color: '#7F8FA4', marginTop: 2, fontWeight: '500' },
+  settingsBtn: { backgroundColor: '#1A2530', padding: 12, borderRadius: 30, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.15, shadowRadius: 6, elevation: 5 },
+  sosContainer: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  mainSosButton: { width: 240, height: 240, backgroundColor: '#FF3B30', borderRadius: 120, alignItems: 'center', justifyContent: 'center', shadowColor: '#FF3B30', shadowOffset: { width: 0, height: 15 }, shadowOpacity: 0.4, shadowRadius: 20, elevation: 15, borderWidth: 6, borderColor: '#FFD7D5' },
+  mainSosButtonActive: { backgroundColor: '#D32F2F', borderColor: '#FFCDD2', transform: [{ scale: 0.95 }] },
+  mainSosButtonText: { color: 'white', fontSize: 60, fontWeight: '900', letterSpacing: 2 },
+  sosHint: { marginTop: 30, color: '#7F8FA4', fontSize: 14, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1 },
+  timerActiveContainer: { alignItems: 'center', backgroundColor: '#FFF8E1', padding: 25, marginHorizontal: 25, borderRadius: 20, borderWidth: 2, borderColor: '#FFB300', marginTop: 10, shadowColor: '#FFB300', shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.2, shadowRadius: 8, elevation: 5 },
+  timerTitle: { fontSize: 14, color: '#FF8F00', fontWeight: '800', textTransform: 'uppercase', letterSpacing: 1 },
+  timerText: { fontSize: 60, fontWeight: '900', color: '#FFB300', marginVertical: 10 },
+  cancelTimerBtn: { backgroundColor: '#34C759', paddingVertical: 16, paddingHorizontal: 40, borderRadius: 30, shadowColor: '#34C759', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 5, elevation: 4 },
+  cancelTimerText: { color: 'white', fontWeight: '800', fontSize: 16, textTransform: 'uppercase' },
+  settingsContainer: { flex: 1, backgroundColor: '#F4F7FC', paddingTop: 60, paddingHorizontal: 20 },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
+  header: { fontSize: 22, fontWeight: '800', color: '#1A2530' },
+  iconButton: { padding: 5, backgroundColor: '#fff', borderRadius: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 3, elevation: 2 },
+  card: { backgroundColor: 'white', padding: 22, borderRadius: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 3, marginBottom: 20 },
+  title: { fontSize: 18, fontWeight: '800', marginBottom: 6, color: '#1A2530' },
+  subTitle: { fontSize: 14, fontWeight: '700', color: '#1A2530', marginBottom: 10 },
+  description: { fontSize: 13, color: '#7F8FA4', marginBottom: 18, lineHeight: 18 },
+  inputGroup: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 12, paddingHorizontal: 15, height: 50 },
+  inputIcon: { marginRight: 10 },
+  textInput: { flex: 1, fontSize: 16, color: '#1A2530', fontWeight: '500' },
+  phonebookBtn: { flexDirection: 'row', backgroundColor: '#007AFF', padding: 14, borderRadius: 12, alignItems: 'center', justifyContent: 'center', marginBottom: 15 },
+  phonebookBtnText: { color: 'white', fontSize: 16, fontWeight: '700', marginLeft: 8 },
+  divider: { height: 1, backgroundColor: '#E2E8F0', marginVertical: 15 },
+  contactRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#E2E8F0', padding: 12, borderRadius: 12, marginBottom: 10 },
+  contactDetails: { flex: 1 },
+  contactName: { fontSize: 15, fontWeight: '700', color: '#1A2530' },
+  contactNumber: { fontSize: 13, color: '#7F8FA4', marginTop: 2, fontWeight: '500' },
+  deleteContactBtn: { padding: 5 },
+  emptyContactsText: { textAlign: 'center', color: '#A0AABF', fontStyle: 'italic', marginBottom: 10 },
+  manualAddRow: { flexDirection: 'row', alignItems: 'stretch' },
+  manualInputCol: { flex: 1, marginRight: 10 },
+  input: { backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 8, paddingHorizontal: 12, height: 40, fontSize: 14, color: '#1A2530' },
+  addButton: { backgroundColor: '#34C759', width: 50, borderRadius: 12, alignItems: 'center', justifyContent: 'center', shadowColor: '#34C759', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 3 },
+  switchContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#E2E8F0', padding: 15, borderRadius: 12 },
+  switchLabel: { fontSize: 16, fontWeight: '700', color: '#1A2530' },
+  switchSubLabel: { fontSize: 12, color: '#7F8FA4', marginTop: 2, fontWeight: '600' },
+  startTimerBtn: { flexDirection: 'row', backgroundColor: '#FF9500', padding: 15, borderRadius: 12, alignItems: 'center', justifyContent: 'center', shadowColor: '#FF9500', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 6, elevation: 4 },
+  startTimerText: { color: 'white', fontWeight: '700', fontSize: 16 }
 });

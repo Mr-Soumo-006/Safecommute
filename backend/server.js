@@ -23,11 +23,12 @@ io.on('connection', (socket) => {
     // Listen for encrypted alerts from the Victim's Phase 1 app
     socket.on('encrypted_alert', (payload) => {
         if (payload.isLiveUpdate) {
-            console.log(`[LIVE TRACKING] Secure location update received from ${socket.id} - Streaming to contacts...`);
+            console.log(`[LIVE TRACKING] Secure update from ${socket.id} | Battery: ${payload.batteryMetadata || 'Unknown'} - Streaming...`);
         } else {
             console.log('\n[BLIND RELAY] Received SOS payload:');
             console.log('   From Victim ID:', socket.id);
             console.log('   Target Contact ID:', payload.targetContactId);
+            console.log('   Battery Level:', payload.batteryMetadata || 'Unknown');
             console.log('   Ciphertext (Encrypted Location):', payload.ciphertext);
             console.log('   Grid Sector (Metadata):', payload.gridSector);
         }
