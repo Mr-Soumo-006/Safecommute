@@ -14,7 +14,7 @@ import util from 'tweetnacl-util';
 import * as DirectSms from './modules/direct-sms';
 
 // Updated to your actual Wi-Fi IP
-const SERVER_URL = 'http://192.168.29.90:3000'; 
+const SERVER_URL = 'http://192.168.29.218:3000'; 
 
 export default function App() {
   const [isReady, setIsReady] = useState(false);
