@@ -1,9 +1,0 @@
-{
-  "platforms": ["apple", "android", "web"],
-  "apple": {
-    "modules": ["DirectSmsModule"]
-  },
-  "android": {
-    "modules": ["expo.modules.directsms.DirectSmsModule"]
-  }
-}
