@@ -1,14 +1,17 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:audioplayers/audioplayers.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sensors_plus/sensors_plus.dart';
+import 'package:permission_handler/permission_handler.dart'; // Added for SMS permission
 import 'dart:async';
 import 'dart:math';
 
-import 'settings.dart'; // Import the new settings screen
+import 'settings.dart'; 
+import 'role_screen.dart'; 
 
 void main() {
   runApp(const SafeCommuteApp());
@@ -21,12 +24,19 @@ class SafeCommuteApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'SafeCommute Phase 2',
+      debugShowCheckedModeBanner: false, 
       theme: ThemeData(
-        brightness: Brightness.dark,
-        scaffoldBackgroundColor: const Color(0xFF121212),
+        brightness: Brightness.light,
+        scaffoldBackgroundColor: const Color(0xFFF5F5F5), 
         primaryColor: const Color(0xFFE53935),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          iconTheme: IconThemeData(color: Colors.black87),
+          titleTextStyle: TextStyle(color: Colors.black87, fontSize: 20, fontWeight: FontWeight.bold),
+        ),
       ),
-      home: const DashboardScreen(),
+      home: const RoleSelectionScreen(), 
     );
   }
 }
@@ -48,8 +58,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Timer? _locationTimer;
   StreamSubscription<AccelerometerEvent>? _shakeSubscription;
   
-  // Replace with your current Wi-Fi IP!
   final String serverUrl = 'http://192.168.29.218:3000';
+  
+  static const MethodChannel _smsChannel = MethodChannel('com.safecommute.app/sms');
 
   @override
   void initState() {
@@ -62,12 +73,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   void _initShakeDetection() {
     _shakeSubscription = accelerometerEventStream().listen((AccelerometerEvent event) async {
-      if (isSosActive) return; // Don't trigger if already active
+      if (isSosActive) return; 
       
-      // Calculate physical acceleration (G-Force)
       double gForce = sqrt(event.x * event.x + event.y * event.y + event.z * event.z) / 9.8;
       
-      // If shaken hard enough (like Phase 1), check preferences and trigger SOS!
       if (gForce > 3.0) {
         final prefs = await SharedPreferences.getInstance();
         bool shakeEnabled = prefs.getBool('shakeEnabled') ?? true;
@@ -79,9 +88,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _requestPermissions() async {
+    // 1. Request Location Permission
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       await Geolocator.requestPermission();
+    }
+    
+    // 2. Request SMS Permission at Runtime
+    if (await Permission.sms.isDenied) {
+      await Permission.sms.request();
     }
   }
 
@@ -101,17 +116,54 @@ class _DashboardScreenState extends State<DashboardScreen> {
     socket.onConnect((_) => print("Connected to Backend Server"));
   }
 
+  Future<void> _sendNativeSMS(String message) async {
+    final prefs = await SharedPreferences.getInstance();
+    List<String> savedContacts = prefs.getStringList('savedContacts') ?? [];
+    
+    for (String contactInfo in savedContacts) {
+      // Extract just the phone number from "Name: Phone" format
+      List<String> parts = contactInfo.split(': ');
+      if (parts.length > 1) {
+        String phone = parts[1].trim();
+        try {
+          final String result = await _smsChannel.invokeMethod('sendSMS', {
+            'phone': phone,
+            'message': message,
+          });
+          print(result);
+        } catch (e) {
+          print("Failed to send SMS to $phone: $e");
+        }
+      }
+    }
+  }
+
   Future<void> _startActiveDefense() async {
     final prefs = await SharedPreferences.getInstance();
     bool sirenEnabled = prefs.getBool('sirenEnabled') ?? true;
+    String myName = prefs.getString('username') ?? "A Commuter";
+    if (myName.trim().isEmpty) myName = "A Commuter";
 
-    // 1. Start Loud Siren (If user enabled it in settings)
+    // Grab quick location for the SMS link
+    String mapLink = "Location unknown";
+    try {
+      Position position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+      mapLink = "https://maps.google.com/?q=${position.latitude},${position.longitude}";
+    } catch (e) {
+      print("Could not get quick location for SMS");
+    }
+
+    // 1. Send SMS to all emergency contacts silently via Kotlin
+    String emergencyMessage = "$myName's EMERGENCY! I need help. Track my live location: $mapLink";
+    await _sendNativeSMS(emergencyMessage);
+
+    // 2. Start Loud Siren (If user enabled it in settings)
     if (sirenEnabled) {
       await _audioPlayer.setReleaseMode(ReleaseMode.loop);
       await _audioPlayer.play(AssetSource('siren.ogg'));
     }
 
-    // 2. Start Live Tracking Loop (Every 5 seconds)
+    // 3. Start Live Tracking Loop (Every 5 seconds)
     _locationTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
       try {
         Position position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
@@ -124,9 +176,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
         
         socket.emit('encrypted_alert', {
           'targetContactId': 'all',
-          'alertData': 'encrypted_gps_data_placeholder',
+          'lat': position.latitude,
+          'lng': position.longitude,
+          'username': myName,
           'batteryMetadata': level,
-          'timestamp': DateTime.now().toIso8601String()
+          'timestamp': DateTime.now().toIso8601String(),
+          'isLiveUpdate': true,
         });
       } catch (e) {
         setState(() {
@@ -189,12 +244,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Text(
-              isSosActive ? "EMERGENCY ACTIVE" : "READY",
+              isSosActive ? "EMERGENCY ACTIVE" : "READY TO TRACK",
               style: TextStyle(
-                color: isSosActive ? Colors.redAccent : Colors.grey,
+                color: isSosActive ? Colors.redAccent : Colors.black54,
                 fontSize: 24,
                 fontWeight: FontWeight.bold,
-                letterSpacing: 2.0,
+                letterSpacing: 1.5,
               ),
             ),
             const SizedBox(height: 50),
@@ -236,8 +291,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: Colors.black45,
+                color: Colors.white,
                 borderRadius: BorderRadius.circular(12),
+                boxShadow: [
+                  BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, spreadRadius: 2)
+                ]
               ),
               child: Column(
                 children: [
@@ -246,7 +304,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     children: [
                       const Icon(Icons.battery_charging_full, color: Colors.green, size: 20),
                       const SizedBox(width: 8),
-                      Text("Battery Level: $batteryLevel", style: const TextStyle(color: Colors.white, fontSize: 16)),
+                      Text("Battery Level: $batteryLevel", style: const TextStyle(color: Colors.black87, fontSize: 16, fontWeight: FontWeight.w500)),
                     ],
                   ),
                   const SizedBox(height: 10),
@@ -255,7 +313,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     children: [
                       Icon(Icons.location_on, color: isSosActive ? Colors.redAccent : Colors.blueAccent, size: 20),
                       const SizedBox(width: 8),
-                      Text(locationStatus, style: const TextStyle(color: Colors.white, fontSize: 16)),
+                      Text(locationStatus, style: const TextStyle(color: Colors.black87, fontSize: 16, fontWeight: FontWeight.w500)),
                     ],
                   ),
                 ],
