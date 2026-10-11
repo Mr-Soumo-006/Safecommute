@@ -24,7 +24,7 @@ class SafeCommuteApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'SafeCommute Phase 2',
+      title: 'SafeCommute',
       debugShowCheckedModeBanner: false, 
       theme: ThemeData(
         brightness: Brightness.light,
