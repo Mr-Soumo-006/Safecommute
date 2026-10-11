@@ -20,7 +20,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _usernameController = TextEditingController();
-  final TextEditingController _serverController = TextEditingController();
 
   @override
   void initState() {
@@ -36,13 +35,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _savedContacts = prefs.getStringList('savedContacts') ?? [];
       _myUsername = prefs.getString('username') ?? "";
       _usernameController.text = _myUsername;
-      _serverController.text = prefs.getString('serverUrl') ?? 'https://safecommute-uvn5.onrender.com';
     });
-  }
-
-  Future<void> _saveServerUrl(String val) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('serverUrl', val.trim());
   }
 
   Future<void> _saveToggleSettings() async {
@@ -162,7 +155,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _nameController.dispose();
     _phoneController.dispose();
     _usernameController.dispose();
-    _serverController.dispose();
     super.dispose();
   }
 
@@ -284,19 +276,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               },
             ),
             
-            const SizedBox(height: 25),
-            const Text("Backend Server", style: TextStyle(color: Colors.redAccent, fontSize: 18, fontWeight: FontWeight.bold)),
-            TextField(
-              decoration: const InputDecoration(
-                labelText: 'Server URL (Cloud or Local IP)',
-                hintText: 'https://your-app.onrender.com',
-                isDense: true,
-              ),
-              style: const TextStyle(color: Colors.black87),
-              controller: _serverController,
-              onChanged: _saveServerUrl,
-            ),
-
             const SizedBox(height: 35),
             
             // Log Out / Switch Role button
