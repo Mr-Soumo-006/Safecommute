@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'role_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -18,7 +19,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
-  final TextEditingController _usernameController = TextEditingController(); // Fixed controller!
+  final TextEditingController _usernameController = TextEditingController();
+  final TextEditingController _serverController = TextEditingController();
 
   @override
   void initState() {
@@ -33,8 +35,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _shakeEnabled = prefs.getBool('shakeEnabled') ?? true;
       _savedContacts = prefs.getStringList('savedContacts') ?? [];
       _myUsername = prefs.getString('username') ?? "";
-      _usernameController.text = _myUsername; // Set initial value here
+      _usernameController.text = _myUsername;
+      _serverController.text = prefs.getString('serverUrl') ?? 'https://safecommute-uvn5.onrender.com';
     });
+  }
+
+  Future<void> _saveServerUrl(String val) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('serverUrl', val.trim());
   }
 
   Future<void> _saveToggleSettings() async {
@@ -108,12 +116,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           itemCount: filtered.length,
                           itemBuilder: (context, index) {
                             Contact c = filtered[index];
+                            String contactName = c.displayName ?? "Unknown Contact";
+                            if (contactName.isEmpty) contactName = "Unknown Contact";
                             return ListTile(
-                              title: Text(c.displayName ?? "Unknown Contact"),
-                              subtitle: Text(c.phones.isNotEmpty ? c.phones.first.number ?? "No number" : "No number"),
+                              title: Text(contactName),
+                              subtitle: Text(c.phones.isNotEmpty ? c.phones.first.number : "No number"),
                               onTap: () async {
                                 if (c.phones.isNotEmpty) {
-                                  String contactInfo = "${c.displayName ?? "Unknown"}: ${c.phones.first.number ?? ""}";
+                                  String contactInfo = "$contactName: ${c.phones.first.number}";
                                   final prefs = await SharedPreferences.getInstance();
                                   setState(() {
                                     if (!_savedContacts.contains(contactInfo)) {
@@ -122,7 +132,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   });
                                   await prefs.setStringList('savedContacts', _savedContacts);
                                 }
-                                Navigator.pop(context);
+                                if (context.mounted) Navigator.pop(context);
                               },
                             );
                           },
@@ -152,6 +162,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _nameController.dispose();
     _phoneController.dispose();
     _usernameController.dispose();
+    _serverController.dispose();
     super.dispose();
   }
 
@@ -165,7 +176,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         elevation: 0,
         iconTheme: const IconThemeData(color: Colors.black87),
       ),
-      body: Padding(
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(20.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -174,10 +185,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             TextField(
               decoration: const InputDecoration(labelText: 'My Name (For SMS Alerts)', isDense: true),
               style: const TextStyle(color: Colors.black87),
-              controller: _usernameController, // Using the persistent controller now!
+              controller: _usernameController,
               onChanged: _saveUsername,
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 25),
             
             const Text("Emergency Contacts", style: TextStyle(color: Colors.redAccent, fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 10),
@@ -210,15 +221,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 10),
 
             // List of chosen contacts
-            Expanded(
-              flex: 1,
-              child: _savedContacts.isEmpty
-                ? const Center(child: Text("No contacts selected yet.", style: TextStyle(color: Colors.black54)))
+            _savedContacts.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 12.0),
+                    child: Center(child: Text("No contacts selected yet.", style: TextStyle(color: Colors.black54))),
+                  )
                 : ListView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
                     itemCount: _savedContacts.length,
                     itemBuilder: (context, index) {
                       return Card(
-                        color: Colors.white, // Light mode card
+                        color: Colors.white,
                         elevation: 2,
                         child: ListTile(
                           leading: const Icon(Icons.person, color: Colors.blueAccent),
@@ -231,8 +245,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       );
                     },
                   ),
-            ),
             
+            const SizedBox(height: 10),
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
@@ -246,14 +260,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
             
-            const SizedBox(height: 20),
+            const SizedBox(height: 25),
             const Text("Preferences", style: TextStyle(color: Colors.redAccent, fontSize: 18, fontWeight: FontWeight.bold)),
             
             SwitchListTile(
               title: const Text('Enable Shake to SOS', style: TextStyle(color: Colors.black87)),
               subtitle: const Text('Automatically trigger SOS when phone is shaken hard', style: TextStyle(color: Colors.black54)),
               value: _shakeEnabled,
-              activeColor: Colors.redAccent,
+              activeThumbColor: Colors.redAccent,
               onChanged: (bool value) {
                 setState(() => _shakeEnabled = value);
                 _saveToggleSettings();
@@ -263,12 +277,56 @@ class _SettingsScreenState extends State<SettingsScreen> {
               title: const Text('Enable Loud Siren Alarm', style: TextStyle(color: Colors.black87)),
               subtitle: const Text('Plays maximum volume siren on SOS', style: TextStyle(color: Colors.black54)),
               value: _sirenEnabled,
-              activeColor: Colors.redAccent,
+              activeThumbColor: Colors.redAccent,
               onChanged: (bool value) {
                 setState(() => _sirenEnabled = value);
                 _saveToggleSettings();
               },
             ),
+            
+            const SizedBox(height: 25),
+            const Text("Backend Server", style: TextStyle(color: Colors.redAccent, fontSize: 18, fontWeight: FontWeight.bold)),
+            TextField(
+              decoration: const InputDecoration(
+                labelText: 'Server URL (Cloud or Local IP)',
+                hintText: 'https://your-app.onrender.com',
+                isDense: true,
+              ),
+              style: const TextStyle(color: Colors.black87),
+              controller: _serverController,
+              onChanged: _saveServerUrl,
+            ),
+
+            const SizedBox(height: 35),
+            
+            // Log Out / Switch Role button
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.redAccent,
+                  side: const BorderSide(color: Colors.redAccent, width: 1.5),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                icon: const Icon(Icons.logout),
+                label: const Text(
+                  "Log Out / Switch Role",
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+                onPressed: () async {
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.remove('userRole');
+                  if (!context.mounted) return;
+                  Navigator.pushAndRemoveUntil(
+                    context,
+                    MaterialPageRoute(builder: (context) => const RoleSelectionScreen()),
+                    (route) => false,
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 20),
           ],
         ),
       ),

@@ -12,6 +12,7 @@ import 'dart:math';
 
 import 'settings.dart'; 
 import 'role_screen.dart'; 
+import 'responder_map.dart';
 
 void main() {
   runApp(const SafeCommuteApp());
@@ -36,7 +37,55 @@ class SafeCommuteApp extends StatelessWidget {
           titleTextStyle: TextStyle(color: Colors.black87, fontSize: 20, fontWeight: FontWeight.bold),
         ),
       ),
-      home: const RoleSelectionScreen(), 
+      home: const RoleCheckScreen(), 
+    );
+  }
+}
+
+class RoleCheckScreen extends StatefulWidget {
+  const RoleCheckScreen({super.key});
+
+  @override
+  State<RoleCheckScreen> createState() => _RoleCheckScreenState();
+}
+
+class _RoleCheckScreenState extends State<RoleCheckScreen> {
+  @override
+  void initState() {
+    super.initState();
+    _checkSavedRole();
+  }
+
+  Future<void> _checkSavedRole() async {
+    final prefs = await SharedPreferences.getInstance();
+    final role = prefs.getString('userRole');
+    if (!mounted) return;
+
+    if (role == 'commuter') {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => const DashboardScreen()),
+      );
+    } else if (role == 'responder') {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => const ResponderMapScreen()),
+      );
+    } else {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => const RoleSelectionScreen()),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      backgroundColor: Color(0xFFF5F5F5),
+      body: Center(
+        child: CircularProgressIndicator(color: Colors.redAccent),
+      ),
     );
   }
 }
@@ -58,7 +107,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Timer? _locationTimer;
   StreamSubscription<AccelerometerEvent>? _shakeSubscription;
   
-  final String serverUrl = 'http://192.168.29.218:3000';
+  String serverUrl = 'https://safecommute-uvn5.onrender.com';
   
   static const MethodChannel _smsChannel = MethodChannel('com.safecommute.app/sms');
 
@@ -108,12 +157,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
-  void _initSocket() {
+  Future<void> _initSocket() async {
+    final prefs = await SharedPreferences.getInstance();
+    serverUrl = prefs.getString('serverUrl') ?? 'https://safecommute-uvn5.onrender.com';
     socket = IO.io(serverUrl, <String, dynamic>{
       'transports': ['websocket'],
       'autoConnect': true,
     });
-    socket.onConnect((_) => print("Connected to Backend Server"));
+    socket.onConnect((_) => print("Connected to Backend Server: $serverUrl"));
   }
 
   Future<void> _sendNativeSMS(String message) async {
