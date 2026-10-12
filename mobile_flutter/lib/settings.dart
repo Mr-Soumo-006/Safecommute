@@ -15,6 +15,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _sirenEnabled = true;
   bool _shakeEnabled = true;
   bool _bleEnabled = false;
+  bool _volumeTriggerEnabled = true;
+  String _volumeButtonType = "down"; // "down" or "up"
+  int _volumeClickCount = 3; // 2, 3, 4, 5
   List<String> _savedContacts = [];
   String _myUsername = "";
 
@@ -34,6 +37,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _sirenEnabled = prefs.getBool('sirenEnabled') ?? true;
       _shakeEnabled = prefs.getBool('shakeEnabled') ?? true;
       _bleEnabled = prefs.getBool('bleEnabled') ?? false;
+      _volumeTriggerEnabled = prefs.getBool('volumeTriggerEnabled') ?? true;
+      _volumeButtonType = prefs.getString('volumeButtonType') ?? "down";
+      _volumeClickCount = prefs.getInt('volumeClickCount') ?? 3;
       _savedContacts = prefs.getStringList('savedContacts') ?? [];
       _myUsername = prefs.getString('username') ?? "";
       _usernameController.text = _myUsername;
@@ -45,6 +51,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await prefs.setBool('sirenEnabled', _sirenEnabled);
     await prefs.setBool('shakeEnabled', _shakeEnabled);
     await prefs.setBool('bleEnabled', _bleEnabled);
+    await prefs.setBool('volumeTriggerEnabled', _volumeTriggerEnabled);
+    await prefs.setString('volumeButtonType', _volumeButtonType);
+    await prefs.setInt('volumeClickCount', _volumeClickCount);
   }
 
   Future<void> _saveUsername(String val) async {
@@ -268,6 +277,83 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 _saveToggleSettings();
               },
             ),
+            SwitchListTile(
+              title: const Text('Enable Volume Button SOS', style: TextStyle(color: Colors.black87, fontWeight: FontWeight.w600)),
+              subtitle: const Text('Discreetly trigger emergency by clicking phone volume button', style: TextStyle(color: Colors.black54)),
+              value: _volumeTriggerEnabled,
+              activeThumbColor: Colors.redAccent,
+              onChanged: (bool value) {
+                setState(() => _volumeTriggerEnabled = value);
+                _saveToggleSettings();
+              },
+            ),
+            if (_volumeTriggerEnabled) ...[
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text("Which volume button to press?", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.black87)),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ChoiceChip(
+                            label: const Center(child: Text("Volume Down")),
+                            selected: _volumeButtonType == "down",
+                            selectedColor: Colors.redAccent.withValues(alpha: 0.2),
+                            onSelected: (selected) {
+                              if (selected) {
+                                setState(() => _volumeButtonType = "down");
+                                _saveToggleSettings();
+                              }
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: ChoiceChip(
+                            label: const Center(child: Text("Volume Up")),
+                            selected: _volumeButtonType == "up",
+                            selectedColor: Colors.redAccent.withValues(alpha: 0.2),
+                            onSelected: (selected) {
+                              if (selected) {
+                                setState(() => _volumeButtonType = "up");
+                                _saveToggleSettings();
+                              }
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text("Required Rapid Clicks:", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.black87)),
+                        DropdownButton<int>(
+                          value: _volumeClickCount,
+                          underline: Container(),
+                          items: [2, 3, 4, 5].map((count) {
+                            return DropdownMenuItem<int>(
+                              value: count,
+                              child: Text("$count clicks", style: const TextStyle(fontWeight: FontWeight.bold)),
+                            );
+                          }).toList(),
+                          onChanged: (newCount) {
+                            if (newCount != null) {
+                              setState(() => _volumeClickCount = newCount);
+                              _saveToggleSettings();
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(),
+            ],
             SwitchListTile(
               title: const Text('Enable Loud Siren Alarm', style: TextStyle(color: Colors.black87)),
               subtitle: const Text('Plays maximum volume siren on SOS', style: TextStyle(color: Colors.black54)),

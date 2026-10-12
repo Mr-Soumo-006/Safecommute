@@ -110,6 +110,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   String serverUrl = 'https://safecommute-uvn5.onrender.com';
   
   static const MethodChannel _smsChannel = MethodChannel('com.safecommute.app/sms');
+  static const MethodChannel _volumeChannel = MethodChannel('com.safecommute.app/volume');
+  final List<DateTime> _volumePressTimestamps = [];
 
   @override
   void initState() {
@@ -118,6 +120,36 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _initSocket();
     _requestPermissions();
     _initShakeDetection();
+    _initVolumeButtonDetection();
+  }
+
+  void _initVolumeButtonDetection() {
+    _volumeChannel.setMethodCallHandler((call) async {
+      if (call.method == "onVolumePressed") {
+        String direction = call.arguments as String? ?? "down";
+        
+        final prefs = await SharedPreferences.getInstance();
+        bool volumeTriggerEnabled = prefs.getBool('volumeTriggerEnabled') ?? true;
+        if (!volumeTriggerEnabled) return;
+
+        String selectedButton = prefs.getString('volumeButtonType') ?? "down"; // "down" or "up"
+        int requiredClicks = prefs.getInt('volumeClickCount') ?? 3; // default 3 clicks
+
+        if (direction == selectedButton) {
+          final now = DateTime.now();
+          _volumePressTimestamps.add(now);
+
+          // Keep only presses within the last 2.0 seconds
+          _volumePressTimestamps.removeWhere((t) => now.difference(t).inMilliseconds > 2000);
+
+          if (_volumePressTimestamps.length >= requiredClicks) {
+            _volumePressTimestamps.clear();
+            HapticFeedback.heavyImpact();
+            toggleSOS();
+          }
+        }
+      }
+    });
   }
 
   void _initShakeDetection() {
