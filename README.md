@@ -6,7 +6,7 @@
 [![Kotlin](https://img.shields.io/badge/Kotlin-Native_Android-purple.svg)](https://kotlinlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-Backend-green.svg)](https://nodejs.org/)
 [![Socket.io](https://img.shields.io/badge/Socket.io-WebSockets-black.svg)](https://socket.io/)
-[![Cloud Hosted](https://img.shields.io/badge/Render-Live_Production-46E3B7.svg)](https://safecommute-uvn5.onrender.com)
+[![Cloud Hosted](https://img.shields.io/badge/Render-Cloud_Service-46E3B7.svg)](https://render.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -29,8 +29,8 @@ Built with a high-performance **Flutter** mobile client, low-level **Kotlin** An
 
 ### 2. 📩 Native Background SMS Engine (Physical SIM Fallback)
 * **Zero User Intervention:** Uses low-level Android `SmsManager` via Flutter `MethodChannel` to silently send text messages directly across cellular networks without opening the default Messages app.
-* **Dynamic Location Links:** Each SMS includes the commuter's name and an instant clickable Google Maps link containing their exact live coordinates:
-  > *"Soumo's EMERGENCY! I need help. Track my live location: https://maps.google.com/?q=22.5726,88.3639"*
+* **Dynamic Location Links:** Each SMS includes the commuter's profile name and an instant clickable Google Maps link with their exact live coordinates:
+  > *"EMERGENCY! [User] needs help. Track my live location: https://maps.google.com/?q=LATITUDE,LONGITUDE"*
 * **Address Book Picker & Live Search:** Select contacts directly from the device's address book with a real-time instant search bar or enter numbers manually.
 
 ### 3. 🗺️ Responder Live Navigation & Blue Dot Dashboard
@@ -55,21 +55,17 @@ flowchart TD
     subgraph Commuter ["Commuter Device (Victim)"]
         H1["Physical Volume Button / Shake"] -->|Hardware Trigger| APP["SafeCommute App (Flutter)"]
         APP -->|MethodChannel| KOTLIN["Native Kotlin SmsManager"]
-        APP -->|WebSocket Stream (5s)| CLOUD
+        APP -->|WebSocket Stream 5s| CLOUD["Node.js Socket.IO Cloud Relay"]
     end
 
     subgraph Cellular ["Cellular Telecom"]
-        KOTLIN -->|Silent SMS| CONTACTS["Emergency Contacts' Phones"]
-    end
-
-    subgraph Backend ["Cloud Infrastructure (Render)"]
-        CLOUD["Node.js Socket.IO Relay Hub<br/>https://safecommute-uvn5.onrender.com"]
+        KOTLIN -->|Silent SMS| CONTACTS["Emergency Contacts"]
     end
 
     subgraph Responder ["Responder Device (Police / Civilian)"]
         CLOUD -->|incoming_alert broadcast| RES_APP["SafeCommute Responder Map"]
         RES_APP -->|Blue Dot| RES_GPS["Responder GPS"]
-        RES_APP -->|Calculate Distance| DIST["Live Proximity (m/km)"]
+        RES_APP -->|Calculate Distance| DIST["Live Proximity m / km"]
         RES_APP -->|One-Tap Navigate| GMAPS["Google Maps Turn-by-Turn"]
     end
 ```
@@ -144,7 +140,6 @@ npm install
 # Start the blind relay hub
 node server.js
 ```
-*(By default, the Flutter app is configured to connect to the live cloud server at `https://safecommute-uvn5.onrender.com`).*
 
 ---
 
@@ -153,7 +148,7 @@ node server.js
 - [x] **Phase 1: Personal Alert & Active Defense** (Complete)
   - Native Kotlin SMS, Shake trigger, Siren alarm, Contact address book with search.
 - [x] **Phase 2: Police & Responder Network** (Complete)
-  - Live Render cloud relay, Sticky role auto-login, Responder Blue Dot GPS, live distance counter, turn-by-turn Google Maps navigation, multi-victim tracking.
+  - Cloud relay, Sticky role auto-login, Responder Blue Dot GPS, live distance counter, turn-by-turn Google Maps navigation, multi-victim tracking.
 - [ ] **Phase 3: Hardware Wearable & Electronics** (Next Phase)
   - ESP32 BLE panic keychain/ring, pull-pin trigger mechanism, automatic peripheral pairing.
 - [ ] **Phase 4: AI Predictive Safety Layer**
