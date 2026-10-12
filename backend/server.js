@@ -38,6 +38,12 @@ io.on('connection', (socket) => {
         if (!payload.isLiveUpdate) console.log('[BLIND RELAY] Initial Ciphertext securely routed to contacts.');
     });
 
+    // Listen for cancellation from the commuter
+    socket.on('cancel_alert', (payload) => {
+        console.log(`[ALERT CANCELLED] SOS cancelled by ${payload.username || socket.id}`);
+        socket.broadcast.emit('alert_cancelled', payload);
+    });
+
     // Listen for automatic SMS fallback triggers (Real Twilio Integration)
     socket.on('trigger_sms_fallback', (data) => {
         console.log('\n[TWILIO SMS] Attempting to send real SMS...');

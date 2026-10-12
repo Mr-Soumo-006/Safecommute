@@ -250,6 +250,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     setState(() {
       locationStatus = "GPS Ready";
     });
+
+    // 3. Notify server and responders that emergency is resolved
+    final prefs = await SharedPreferences.getInstance();
+    String myName = prefs.getString('username') ?? "A Commuter";
+    socket.emit('cancel_alert', {
+      'username': myName,
+      'timestamp': DateTime.now().toIso8601String(),
+    });
   }
 
   void toggleSOS() async {

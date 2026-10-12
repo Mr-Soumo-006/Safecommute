@@ -14,6 +14,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _sirenEnabled = true;
   bool _shakeEnabled = true;
+  bool _bleEnabled = false;
   List<String> _savedContacts = [];
   String _myUsername = "";
 
@@ -32,6 +33,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() {
       _sirenEnabled = prefs.getBool('sirenEnabled') ?? true;
       _shakeEnabled = prefs.getBool('shakeEnabled') ?? true;
+      _bleEnabled = prefs.getBool('bleEnabled') ?? false;
       _savedContacts = prefs.getStringList('savedContacts') ?? [];
       _myUsername = prefs.getString('username') ?? "";
       _usernameController.text = _myUsername;
@@ -42,6 +44,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('sirenEnabled', _sirenEnabled);
     await prefs.setBool('shakeEnabled', _shakeEnabled);
+    await prefs.setBool('bleEnabled', _bleEnabled);
   }
 
   Future<void> _saveUsername(String val) async {
@@ -276,6 +279,63 @@ class _SettingsScreenState extends State<SettingsScreen> {
               },
             ),
             
+            const SizedBox(height: 25),
+            const Text("Hardware Wearable (Bluetooth)", style: TextStyle(color: Colors.redAccent, fontSize: 18, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 10),
+            Card(
+              color: Colors.white,
+              elevation: 2,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.bluetooth, color: Colors.blueAccent, size: 28),
+                        const SizedBox(width: 10),
+                        const Expanded(
+                          child: Text(
+                            "Emergency Panic Button (BLE)",
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.black87),
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade200,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Text(
+                            "Prototype Pending",
+                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.black54),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    const Text(
+                      "Pairs with your physical ESP32 wearable button. When pressed, hardware automatically triggers instant silent SOS, live GPS tracking, and SMS.",
+                      style: TextStyle(color: Colors.black54, fontSize: 13),
+                    ),
+                    const Divider(height: 24),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text("Enable Hardware Auto-Pairing", style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.black87)),
+                      subtitle: const Text("Continuously scan for SafeCommute BLE device", style: TextStyle(fontSize: 12, color: Colors.black54)),
+                      value: _bleEnabled,
+                      activeThumbColor: Colors.blueAccent,
+                      onChanged: (val) {
+                        setState(() => _bleEnabled = val);
+                        _saveToggleSettings();
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
             const SizedBox(height: 35),
             
             // Log Out / Switch Role button
