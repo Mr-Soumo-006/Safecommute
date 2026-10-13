@@ -11,7 +11,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'role_screen.dart';
 
-enum MapLayerStyle { streetRoads, classicOsm, darkTactical }
+enum MapLayerStyle { humanitarianOsm, standardOsm, roadDetailOsm }
 
 class VictimAlert {
   final String username;
@@ -51,7 +51,7 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
   String? _selectedVictimUsername;
   LatLng _mapCenter = const LatLng(22.5726, 88.3639); // Default
 
-  MapLayerStyle _currentMapLayer = MapLayerStyle.streetRoads;
+  MapLayerStyle _currentMapLayer = MapLayerStyle.humanitarianOsm;
   final bool _autoFollowVictim = true;
 
   @override
@@ -244,8 +244,27 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
     }
   }
 
-  String _calculateBearing(double victimLat, double victimLng) {
-    if (_myPosition == null) return "";
+  Map<String, dynamic> _getNavigationTurn(double victimLat, double victimLng) {
+    if (_myPosition == null) {
+      return {'text': 'Locating you...', 'icon': Icons.my_location, 'color': Colors.grey};
+    }
+
+    double distanceMeters = Geolocator.distanceBetween(
+      _myPosition!.latitude,
+      _myPosition!.longitude,
+      victimLat,
+      victimLng,
+    );
+
+    // If within 8 meters, responder is right beside the victim
+    if (distanceMeters <= 8) {
+      return {
+        'text': 'Beside you (<8m)',
+        'icon': Icons.check_circle,
+        'color': Colors.green,
+      };
+    }
+
     double lat1 = _myPosition!.latitude * (math.pi / 180.0);
     double lon1 = _myPosition!.longitude * (math.pi / 180.0);
     double lat2 = victimLat * (math.pi / 180.0);
@@ -254,46 +273,86 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
     double dLon = lon2 - lon1;
     double y = math.sin(dLon) * math.cos(lat2);
     double x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(dLon);
-    double brng = math.atan2(y, x) * (180.0 / math.pi);
-    brng = (brng + 360.0) % 360.0;
+    double bearing = (math.atan2(y, x) * (180.0 / math.pi) + 360.0) % 360.0;
 
-    const directions = ["North ↑", "North-East ↗", "East →", "South-East ↘", "South ↓", "South-West ↙", "West ←", "North-West ↖"];
-    int index = ((brng + 22.5) / 45.0).floor() % 8;
-    return directions[index];
+    double heading = _myPosition!.heading;
+
+    // When device is in motion or has compass heading (heading > 0)
+    if (heading > 0.0) {
+      double rel = (bearing - heading + 360.0) % 360.0;
+      if (rel <= 25.0 || rel >= 335.0) {
+        return {'text': 'Straight Ahead', 'icon': Icons.arrow_upward, 'color': Colors.blue};
+      } else if (rel > 25.0 && rel <= 70.0) {
+        return {'text': 'Bear Right', 'icon': Icons.north_east, 'color': Colors.orange};
+      } else if (rel > 70.0 && rel <= 115.0) {
+        return {'text': 'Turn Right', 'icon': Icons.turn_right, 'color': Colors.deepOrange};
+      } else if (rel > 115.0 && rel <= 160.0) {
+        return {'text': 'Sharp Right', 'icon': Icons.south_east, 'color': Colors.redAccent};
+      } else if (rel > 160.0 && rel <= 200.0) {
+        return {'text': 'Turn Around', 'icon': Icons.arrow_downward, 'color': Colors.red};
+      } else if (rel > 200.0 && rel <= 245.0) {
+        return {'text': 'Sharp Left', 'icon': Icons.south_west, 'color': Colors.redAccent};
+      } else if (rel > 245.0 && rel <= 290.0) {
+        return {'text': 'Turn Left', 'icon': Icons.turn_left, 'color': Colors.deepOrange};
+      } else {
+        return {'text': 'Bear Left', 'icon': Icons.north_west, 'color': Colors.orange};
+      }
+    } else {
+      // Stationary (Standing still) - intuitive directional guide
+      if (bearing >= 337.5 || bearing < 22.5) {
+        return {'text': 'Ahead (North)', 'icon': Icons.arrow_upward, 'color': Colors.blue};
+      } else if (bearing >= 22.5 && bearing < 67.5) {
+        return {'text': 'Ahead-Right', 'icon': Icons.north_east, 'color': Colors.orange};
+      } else if (bearing >= 67.5 && bearing < 112.5) {
+        return {'text': 'To your Right', 'icon': Icons.turn_right, 'color': Colors.deepOrange};
+      } else if (bearing >= 112.5 && bearing < 157.5) {
+        return {'text': 'Behind-Right', 'icon': Icons.south_east, 'color': Colors.redAccent};
+      } else if (bearing >= 157.5 && bearing < 202.5) {
+        return {'text': 'Behind you', 'icon': Icons.arrow_downward, 'color': Colors.red};
+      } else if (bearing >= 202.5 && bearing < 247.5) {
+        return {'text': 'Behind-Left', 'icon': Icons.south_west, 'color': Colors.redAccent};
+      } else if (bearing >= 247.5 && bearing < 292.5) {
+        return {'text': 'To your Left', 'icon': Icons.turn_left, 'color': Colors.deepOrange};
+      } else {
+        return {'text': 'Ahead-Left', 'icon': Icons.north_west, 'color': Colors.orange};
+      }
+    }
   }
 
   String _getTileUrl() {
     switch (_currentMapLayer) {
-      case MapLayerStyle.streetRoads:
-        // CartoDB Voyager: High-contrast roads, street labels, and navigation typography
-        return 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
-      case MapLayerStyle.classicOsm:
+      case MapLayerStyle.humanitarianOsm:
+        // Humanitarian OSM (HOT): Designed for emergency rescue, clear roads, 100% Free, NO API KEY
+        return 'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png';
+      case MapLayerStyle.standardOsm:
+        // Standard OpenStreetMap: Global reference map, 100% Free, NO API KEY
         return 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
-      case MapLayerStyle.darkTactical:
-        return 'https://{s}.basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}{r}.png';
+      case MapLayerStyle.roadDetailOsm:
+        // High-Detail Road Map (OSM-FR): Clear road hierarchy, 100% Free, NO API KEY
+        return 'https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png';
     }
   }
 
   void _cycleMapLayer() {
     setState(() {
       switch (_currentMapLayer) {
-        case MapLayerStyle.streetRoads:
-          _currentMapLayer = MapLayerStyle.classicOsm;
+        case MapLayerStyle.humanitarianOsm:
+          _currentMapLayer = MapLayerStyle.standardOsm;
           break;
-        case MapLayerStyle.classicOsm:
-          _currentMapLayer = MapLayerStyle.darkTactical;
+        case MapLayerStyle.standardOsm:
+          _currentMapLayer = MapLayerStyle.roadDetailOsm;
           break;
-        case MapLayerStyle.darkTactical:
-          _currentMapLayer = MapLayerStyle.streetRoads;
+        case MapLayerStyle.roadDetailOsm:
+          _currentMapLayer = MapLayerStyle.humanitarianOsm;
           break;
       }
     });
 
-    String layerName = _currentMapLayer == MapLayerStyle.streetRoads
-        ? "🛣️ Detailed Street Roads"
-        : _currentMapLayer == MapLayerStyle.classicOsm
-            ? "🗺️ Classic OpenStreetMap"
-            : "🌑 Dark Tactical Night Mode";
+    String layerName = _currentMapLayer == MapLayerStyle.humanitarianOsm
+        ? "🚨 Emergency Roads (HOT)"
+        : _currentMapLayer == MapLayerStyle.standardOsm
+            ? "🗺️ Standard OpenStreetMap"
+            : "🛣️ High-Detail Roads (OSM-FR)";
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -470,9 +529,9 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
             children: [
               TileLayer(
                 urlTemplate: _getTileUrl(),
-                subdomains: const ['a', 'b', 'c', 'd'],
-                retinaMode: true,
+                subdomains: const ['a', 'b', 'c'],
                 userAgentPackageName: 'com.safecommute.app.v2',
+                maxZoom: 19,
               ),
               PolylineLayer(polylines: polylines),
               MarkerLayer(markers: markers),
@@ -637,6 +696,7 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
                     children: [
                       // Header Row
                       Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
                         children: [
                           Container(
                             padding: const EdgeInsets.all(8),
@@ -646,47 +706,83 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
                             ),
                             child: const Icon(Icons.warning_amber_rounded, color: Colors.redAccent, size: 24),
                           ),
-                          const SizedBox(width: 12),
+                          const SizedBox(width: 10),
                           Expanded(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  currentVictim.username,
-                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17, color: Colors.black87),
-                                ),
                                 Row(
                                   children: [
-                                    Text(
-                                      _formatDistance(currentVictim.lat, currentVictim.lng),
-                                      style: const TextStyle(color: Colors.blueAccent, fontWeight: FontWeight.bold, fontSize: 13),
-                                    ),
-                                    if (_myPosition != null) ...[
-                                      const SizedBox(width: 8),
-                                      Text(
-                                        "• ${_calculateBearing(currentVictim.lat, currentVictim.lng)}",
-                                        style: const TextStyle(color: Colors.black54, fontSize: 12, fontWeight: FontWeight.w600),
+                                    Expanded(
+                                      child: Text(
+                                        currentVictim.username,
+                                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.black87),
+                                        overflow: TextOverflow.ellipsis,
                                       ),
-                                    ],
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: Colors.green.shade50,
+                                        borderRadius: BorderRadius.circular(6),
+                                        border: Border.all(color: Colors.green.shade200),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Icon(Icons.battery_charging_full, size: 14, color: Colors.green),
+                                          const SizedBox(width: 3),
+                                          Text(
+                                            "${currentVictim.battery}%",
+                                            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.green),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
                                   ],
                                 ),
-                              ],
-                            ),
-                          ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: Colors.green.shade50,
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: Colors.green.shade200),
-                            ),
-                            child: Row(
-                              children: [
-                                const Icon(Icons.battery_charging_full, size: 16, color: Colors.green),
-                                const SizedBox(width: 4),
-                                Text(
-                                  "${currentVictim.battery}%",
-                                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.green),
+                                const SizedBox(height: 4),
+                                Builder(
+                                  builder: (context) {
+                                    final nav = _getNavigationTurn(currentVictim.lat, currentVictim.lng);
+                                    return Wrap(
+                                      crossAxisAlignment: WrapCrossAlignment.center,
+                                      spacing: 6,
+                                      runSpacing: 4,
+                                      children: [
+                                        Text(
+                                          _formatDistance(currentVictim.lat, currentVictim.lng),
+                                          style: const TextStyle(color: Colors.blueAccent, fontWeight: FontWeight.bold, fontSize: 13),
+                                        ),
+                                        if (_myPosition != null) ...[
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                            decoration: BoxDecoration(
+                                              color: (nav['color'] as Color).withValues(alpha: 0.12),
+                                              borderRadius: BorderRadius.circular(6),
+                                              border: Border.all(color: (nav['color'] as Color).withValues(alpha: 0.4)),
+                                            ),
+                                            child: Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                Icon(nav['icon'] as IconData, size: 13, color: nav['color'] as Color),
+                                                const SizedBox(width: 4),
+                                                Text(
+                                                  nav['text'] as String,
+                                                  style: TextStyle(
+                                                    color: nav['color'] as Color,
+                                                    fontSize: 11,
+                                                    fontWeight: FontWeight.bold,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    );
+                                  },
                                 ),
                               ],
                             ),
