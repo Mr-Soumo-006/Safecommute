@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -11,11 +12,12 @@ class SettingsScreen extends StatefulWidget {
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends State<SettingsScreen> {
+class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObserver {
   bool _sirenEnabled = true;
   bool _shakeEnabled = true;
   bool _bleEnabled = false;
   bool _volumeTriggerEnabled = true;
+  bool _accessibilityServiceActive = false;
   String _volumeButtonType = "down"; // "down" or "up"
   int _volumeClickCount = 3; // 2, 3, 4, 5
   List<String> _savedContacts = [];
@@ -25,10 +27,39 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _usernameController = TextEditingController();
 
+  static const MethodChannel _volumeChannel = MethodChannel('com.safecommute.app/volume');
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadSettings();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _checkAccessibilityStatus();
+    }
+  }
+
+  Future<void> _checkAccessibilityStatus() async {
+    try {
+      bool active = await _volumeChannel.invokeMethod('isAccessibilityEnabled') ?? false;
+      if (mounted) setState(() => _accessibilityServiceActive = active);
+    } catch (_) {}
+  }
+
+  Future<void> _syncToNative() async {
+    try {
+      await _volumeChannel.invokeMethod('syncSettings', {
+        'enabled': _volumeTriggerEnabled,
+        'buttonType': _volumeButtonType,
+        'clickCount': _volumeClickCount,
+        'username': _myUsername,
+        'contacts': _savedContacts,
+      });
+    } catch (_) {}
   }
 
   Future<void> _loadSettings() async {
@@ -44,6 +75,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _myUsername = prefs.getString('username') ?? "";
       _usernameController.text = _myUsername;
     });
+    _checkAccessibilityStatus();
   }
 
   Future<void> _saveToggleSettings() async {
@@ -54,12 +86,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await prefs.setBool('volumeTriggerEnabled', _volumeTriggerEnabled);
     await prefs.setString('volumeButtonType', _volumeButtonType);
     await prefs.setInt('volumeClickCount', _volumeClickCount);
+    await _syncToNative();
   }
 
   Future<void> _saveUsername(String val) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('username', val);
-    _myUsername = val; // No setState needed here since the controller maintains its own state and cursor position
+    _myUsername = val;
+    await _syncToNative();
   }
 
   Future<void> _saveManualContact() async {
@@ -74,6 +108,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _phoneController.clear();
       });
       await prefs.setStringList('savedContacts', _savedContacts);
+      await _syncToNative();
       if (mounted) FocusScope.of(context).unfocus(); // hide keyboard
     }
   }
@@ -136,6 +171,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                     }
                                   });
                                   await prefs.setStringList('savedContacts', _savedContacts);
+                                  await _syncToNative();
                                 }
                                 if (context.mounted) Navigator.pop(context);
                               },
@@ -160,10 +196,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _savedContacts.removeAt(index);
     });
     await prefs.setStringList('savedContacts', _savedContacts);
+    await _syncToNative();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _nameController.dispose();
     _phoneController.dispose();
     _usernameController.dispose();
@@ -340,14 +378,86 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               child: Text("$count clicks", style: const TextStyle(fontWeight: FontWeight.bold)),
                             );
                           }).toList(),
-                          onChanged: (newCount) {
-                            if (newCount != null) {
-                              setState(() => _volumeClickCount = newCount);
+                          onChanged: (val) {
+                            if (val != null) {
+                              setState(() => _volumeClickCount = val);
                               _saveToggleSettings();
                             }
                           },
                         ),
                       ],
+                    ),
+                    const SizedBox(height: 14),
+                    // Background Pocket Mode Accessibility Card
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: _accessibilityServiceActive ? Colors.green.shade50 : Colors.amber.shade50,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: _accessibilityServiceActive ? Colors.green.shade300 : Colors.amber.shade400,
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(
+                                _accessibilityServiceActive ? Icons.check_circle : Icons.offline_bolt_outlined,
+                                color: _accessibilityServiceActive ? Colors.green : Colors.amber.shade900,
+                                size: 20,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  _accessibilityServiceActive
+                                      ? "Background Pocket SOS: Active"
+                                      : "App Closed & Locked Trigger Setup",
+                                  style: TextStyle(
+                                    color: _accessibilityServiceActive ? Colors.green.shade900 : Colors.amber.shade900,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            _accessibilityServiceActive
+                                ? "SafeCommute is actively monitoring your ${_volumeButtonType.toUpperCase()} volume button. You can trigger SOS even when this app is closed or your phone is locked."
+                                : "To trigger SOS when this app is NOT open or when your phone is locked in your pocket, tap below and toggle SafeCommute ON in Accessibility.",
+                            style: TextStyle(
+                              color: _accessibilityServiceActive ? Colors.green.shade800 : Colors.black87,
+                              fontSize: 12,
+                            ),
+                          ),
+                          if (!_accessibilityServiceActive) ...[
+                            const SizedBox(height: 10),
+                            SizedBox(
+                              width: double.infinity,
+                              child: ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.amber.shade900,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(vertical: 8),
+                                ),
+                                icon: const Icon(Icons.settings_accessibility, size: 18),
+                                label: const Text(
+                                  "Enable Background Trigger (1-Tap Setup)",
+                                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                                ),
+                                onPressed: () async {
+                                  try {
+                                    await _volumeChannel.invokeMethod('openAccessibilitySettings');
+                                  } catch (_) {}
+                                },
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
                     ),
                   ],
                 ),

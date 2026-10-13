@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SafeCommute</string>
+    <string name="accessibility_service_description">SafeCommute monitors rapid clicks of your chosen volume button to discreetly trigger SOS, send emergency SMS, and activate live GPS tracking even when your screen is locked or the app is closed.</string>
+</resources>

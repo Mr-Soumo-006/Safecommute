@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:battery_plus/battery_plus.dart';
+// ignore: library_prefixes
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:audioplayers/audioplayers.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -124,8 +125,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   void _initVolumeButtonDetection() {
+    _syncSettingsToNative();
+
     _volumeChannel.setMethodCallHandler((call) async {
-      if (call.method == "onVolumePressed") {
+      if (call.method == "triggerSosNow") {
+        if (!isSosActive) {
+          HapticFeedback.heavyImpact();
+          toggleSOS();
+        }
+      } else if (call.method == "onVolumePressed") {
         String direction = call.arguments as String? ?? "down";
         
         final prefs = await SharedPreferences.getInstance();
@@ -150,6 +158,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
         }
       }
     });
+  }
+
+  Future<void> _syncSettingsToNative() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      bool enabled = prefs.getBool('volumeTriggerEnabled') ?? true;
+      String buttonType = prefs.getString('volumeButtonType') ?? "down";
+      int clickCount = prefs.getInt('volumeClickCount') ?? 3;
+      String username = prefs.getString('username') ?? "A Commuter";
+      List<String> contacts = prefs.getStringList('savedContacts') ?? [];
+
+      await _volumeChannel.invokeMethod('syncSettings', {
+        'enabled': enabled,
+        'buttonType': buttonType,
+        'clickCount': clickCount,
+        'username': username,
+        'contacts': contacts,
+      });
+    } catch (_) {}
   }
 
   void _initShakeDetection() {
@@ -196,7 +223,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       'transports': ['websocket'],
       'autoConnect': true,
     });
-    socket.onConnect((_) => print("Connected to Backend Server: $serverUrl"));
+    socket.onConnect((_) => debugPrint("Connected to Backend Server: $serverUrl"));
   }
 
   Future<void> _sendNativeSMS(String message) async {
@@ -213,9 +240,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
             'phone': phone,
             'message': message,
           });
-          print(result);
+          debugPrint(result);
         } catch (e) {
-          print("Failed to send SMS to $phone: $e");
+          debugPrint("Failed to send SMS to $phone: $e");
         }
       }
     }
@@ -230,10 +257,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // Grab quick location for the SMS link
     String mapLink = "Location unknown";
     try {
-      Position position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+      Position position = await Geolocator.getCurrentPosition(locationSettings: const LocationSettings(accuracy: LocationAccuracy.high));
       mapLink = "https://maps.google.com/?q=${position.latitude},${position.longitude}";
     } catch (e) {
-      print("Could not get quick location for SMS");
+      debugPrint("Could not get quick location for SMS");
     }
 
     // 1. Send SMS to all emergency contacts silently via Kotlin
@@ -249,7 +276,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // 3. Start Live Tracking Loop (Every 5 seconds)
     _locationTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
       try {
-        Position position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+        Position position = await Geolocator.getCurrentPosition(locationSettings: const LocationSettings(accuracy: LocationAccuracy.high));
         setState(() {
           locationStatus = "Lat: ${position.latitude.toStringAsFixed(4)}, Lng: ${position.longitude.toStringAsFixed(4)}";
         });
@@ -357,7 +384,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   shape: BoxShape.circle,
                   boxShadow: [
                     BoxShadow(
-                      color: isSosActive ? Colors.red.withOpacity(0.9) : Colors.red.withOpacity(0.3),
+                      color: isSosActive ? Colors.red.withValues(alpha: 0.9) : Colors.red.withValues(alpha: 0.3),
                       blurRadius: isSosActive ? 50 : 20,
                       spreadRadius: isSosActive ? 15 : 5,
                     )
@@ -385,7 +412,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 color: Colors.white,
                 borderRadius: BorderRadius.circular(12),
                 boxShadow: [
-                  BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, spreadRadius: 2)
+                  BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, spreadRadius: 2)
                 ]
               ),
               child: Column(
