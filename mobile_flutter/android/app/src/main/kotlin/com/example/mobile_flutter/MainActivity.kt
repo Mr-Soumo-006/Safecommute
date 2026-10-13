@@ -3,6 +3,7 @@ package com.example.mobile_flutter
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.telephony.SmsManager
@@ -112,9 +113,23 @@ class MainActivity: FlutterActivity() {
                     openAccessibilitySettings()
                     result.success(true)
                 }
+                "openAppSettings" -> {
+                    openAppSettings()
+                    result.success(true)
+                }
                 else -> result.notImplemented()
             }
         }
+    }
+
+    private fun openAppSettings() {
+        try {
+            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.fromParts("package", packageName, null)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+        } catch (_: Exception) {}
     }
 
     private fun isAccessibilityServiceEnabled(): Boolean {

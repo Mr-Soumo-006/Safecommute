@@ -434,18 +434,68 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
                             ),
                           ),
                           if (!_accessibilityServiceActive) ...[
+                            const SizedBox(height: 12),
+                            Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: Colors.amber.shade100.withValues(alpha: 0.6),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: Colors.amber.shade300),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Icon(Icons.info_outline, size: 16, color: Colors.amber.shade900),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        "Fix 'Restricted setting' in 2 Steps:",
+                                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.amber.shade900),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 4),
+                                  const Text(
+                                    "Android 13+ protects sideloaded APKs by default. Tap Step 1 below, tap the 3 dots (⋮) in the top-right corner, and select 'Allow restricted settings'. Then tap Step 2 to turn SafeCommute ON.",
+                                    style: TextStyle(fontSize: 11, color: Colors.black87),
+                                  ),
+                                ],
+                              ),
+                            ),
                             const SizedBox(height: 10),
+                            SizedBox(
+                              width: double.infinity,
+                              child: ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.blueGrey.shade800,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(vertical: 10),
+                                ),
+                                icon: const Icon(Icons.settings_applications, size: 18),
+                                label: const Text(
+                                  "Step 1: Open App Info (Tap ⋮ -> Allow)",
+                                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                                ),
+                                onPressed: () async {
+                                  try {
+                                    await _volumeChannel.invokeMethod('openAppSettings');
+                                  } catch (_) {}
+                                },
+                              ),
+                            ),
+                            const SizedBox(height: 8),
                             SizedBox(
                               width: double.infinity,
                               child: ElevatedButton.icon(
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: Colors.amber.shade900,
                                   foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(vertical: 8),
+                                  padding: const EdgeInsets.symmetric(vertical: 10),
                                 ),
                                 icon: const Icon(Icons.settings_accessibility, size: 18),
                                 label: const Text(
-                                  "Enable Background Trigger (1-Tap Setup)",
+                                  "Step 2: Turn ON in Accessibility",
                                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
                                 ),
                                 onPressed: () async {
