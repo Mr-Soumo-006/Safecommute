@@ -71,12 +71,51 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
 
   Future<void> _requestPermissionsAndStartService() async {
     try {
+      final prefs = await SharedPreferences.getInstance();
+      bool savedPref = prefs.getBool('backgroundMonitoringEnabled') ?? true;
+      if (mounted) {
+        setState(() => _backgroundMonitoringEnabled = savedPref);
+      }
       await Permission.notification.request();
       await Permission.sms.request();
-      if (_backgroundMonitoringEnabled) {
+      if (savedPref) {
         await _volumeChannel.invokeMethod('startResponderBackgroundService');
+      } else {
+        await _volumeChannel.invokeMethod('stopResponderBackgroundService');
       }
     } catch (_) {}
+  }
+
+  Future<void> _toggleBackgroundMonitoring(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('backgroundMonitoringEnabled', value);
+    setState(() => _backgroundMonitoringEnabled = value);
+
+    if (value) {
+      await _volumeChannel.invokeMethod('startResponderBackgroundService');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("🛡️ Background Alert Shield ON: Alerts will sound even if app is closed."),
+            duration: Duration(seconds: 3),
+            behavior: SnackBarBehavior.floating,
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } else {
+      await _volumeChannel.invokeMethod('stopResponderBackgroundService');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("🛑 Background Alert Shield OFF: Notification cleared."),
+            duration: Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+            backgroundColor: Colors.blueGrey,
+          ),
+        );
+      }
+    }
   }
 
   Future<void> _startLocationTracking() async {
@@ -250,6 +289,7 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
   void _muteAlarm() async {
     try {
       await _alertPlayer.stop();
+      await _volumeChannel.invokeMethod('cancelEmergencyNotification');
       if (mounted) setState(() => _isAlarmPlaying = false);
     } catch (_) {}
   }
@@ -689,33 +729,7 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
               color: _backgroundMonitoringEnabled ? Colors.greenAccent : Colors.white70,
             ),
             tooltip: _backgroundMonitoringEnabled ? "Background Alert Shield: ACTIVE" : "Background Alert Shield: OFF",
-            onPressed: () async {
-              setState(() => _backgroundMonitoringEnabled = !_backgroundMonitoringEnabled);
-              if (_backgroundMonitoringEnabled) {
-                await _volumeChannel.invokeMethod('startResponderBackgroundService');
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text("🛡️ Background SOS Shield Active! Alerts will sound even if app is closed."),
-                      duration: Duration(seconds: 3),
-                      behavior: SnackBarBehavior.floating,
-                      backgroundColor: Colors.green,
-                    ),
-                  );
-                }
-              } else {
-                await _volumeChannel.invokeMethod('stopResponderBackgroundService');
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text("Background SOS Shield Paused."),
-                      duration: Duration(seconds: 2),
-                      behavior: SnackBarBehavior.floating,
-                    ),
-                  );
-                }
-              }
-            },
+            onPressed: () => _toggleBackgroundMonitoring(!_backgroundMonitoringEnabled),
           ),
           IconButton(
             icon: const Icon(Icons.layers, color: Colors.white),
@@ -838,7 +852,7 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       ),
                       icon: const Icon(Icons.volume_off, size: 15),
-                      label: const Text("MUTE", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11)),
+                      label: const Text("TURN OFF ALARM", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11)),
                       onPressed: _muteAlarm,
                     ),
                   ],
@@ -846,30 +860,60 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
               ),
             ),
 
-          // Idle State Banner
+          // Idle State Banner with Clean On/Off Toggle
           if (_activeAlerts.isEmpty)
             Positioned(
-              top: 15,
-              left: 20,
-              right: 20,
+              top: 14,
+              left: 16,
+              right: 16,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                 decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.94),
-                  borderRadius: BorderRadius.circular(12),
+                  color: Colors.white.withValues(alpha: 0.96),
+                  borderRadius: BorderRadius.circular(14),
                   boxShadow: const [
                     BoxShadow(color: Colors.black12, blurRadius: 8, offset: Offset(0, 3)),
                   ],
+                  border: Border.all(
+                    color: _backgroundMonitoringEnabled ? Colors.green.shade300 : Colors.grey.shade300,
+                  ),
                 ),
-                child: const Row(
+                child: Row(
                   children: [
-                    Icon(Icons.radar, color: Colors.blueAccent, size: 24),
-                    SizedBox(width: 12),
+                    Icon(
+                      _backgroundMonitoringEnabled ? Icons.shield : Icons.shield_outlined,
+                      color: _backgroundMonitoringEnabled ? Colors.green : Colors.grey,
+                      size: 26,
+                    ),
+                    const SizedBox(width: 10),
                     Expanded(
-                      child: Text(
-                        "Listening for live emergency SOS alerts... (Road Navigation Ready)",
-                        style: TextStyle(color: Colors.black87, fontSize: 13, fontWeight: FontWeight.w500),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _backgroundMonitoringEnabled
+                                ? "Background Alert Shield: ACTIVE"
+                                : "Background Alert Shield: OFF",
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12,
+                              color: _backgroundMonitoringEnabled ? Colors.green.shade900 : Colors.black87,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            _backgroundMonitoringEnabled
+                                ? "Rings alarm even if SafeCommute is closed. Tap switch to turn OFF."
+                                : "Tap switch to monitor for SOS alerts in the background.",
+                            style: const TextStyle(color: Colors.black54, fontSize: 11),
+                          ),
+                        ],
                       ),
+                    ),
+                    Switch(
+                      value: _backgroundMonitoringEnabled,
+                      activeThumbColor: Colors.green,
+                      onChanged: (val) => _toggleBackgroundMonitoring(val),
                     ),
                   ],
                 ),

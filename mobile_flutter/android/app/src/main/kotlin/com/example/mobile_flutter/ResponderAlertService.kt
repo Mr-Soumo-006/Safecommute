@@ -84,6 +84,10 @@ class ResponderAlertService : Service() {
             }
             ACTION_MUTE_ALARM -> {
                 stopAlarm()
+                try {
+                    val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    manager.cancel(EMERGENCY_NOTIFICATION_ID)
+                } catch (_: Exception) {}
             }
         }
 
@@ -134,6 +138,16 @@ class ResponderAlertService : Service() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE else PendingIntent.FLAG_UPDATE_CURRENT
         )
 
+        val stopIntent = Intent(this, ResponderAlertService::class.java).apply {
+            action = ACTION_STOP_MONITOR
+        }
+        val stopPendingIntent = PendingIntent.getService(
+            this,
+            10,
+            stopIntent,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE else PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, SERVICE_CHANNEL_ID)
         } else {
@@ -147,6 +161,11 @@ class ResponderAlertService : Service() {
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(Notification.PRIORITY_LOW)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+            builder.addAction(Notification.Action.Builder(null, "STOP MONITORING", stopPendingIntent).build())
+            builder.addAction(Notification.Action.Builder(null, "OPEN MAP", pendingIntent).build())
+        }
 
         return builder.build()
     }
