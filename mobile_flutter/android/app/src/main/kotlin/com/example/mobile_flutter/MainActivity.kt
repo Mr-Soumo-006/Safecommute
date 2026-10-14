@@ -140,6 +140,17 @@ class MainActivity: FlutterActivity() {
                     triggerHeavyVibration()
                     result.success(true)
                 }
+                "startResponderBackgroundService" -> {
+                    ResponderAlertService.start(this)
+                    result.success(true)
+                }
+                "stopResponderBackgroundService" -> {
+                    ResponderAlertService.stop(this)
+                    result.success(true)
+                }
+                "isResponderBackgroundServiceRunning" -> {
+                    result.success(ResponderAlertService.isRunning)
+                }
                 else -> result.notImplemented()
             }
         }

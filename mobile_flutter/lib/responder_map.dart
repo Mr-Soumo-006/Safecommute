@@ -59,18 +59,23 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
   static const MethodChannel _volumeChannel = MethodChannel('com.safecommute.app/volume');
   final AudioPlayer _alertPlayer = AudioPlayer();
   bool _isAlarmPlaying = false;
+  bool _backgroundMonitoringEnabled = true;
 
   @override
   void initState() {
     super.initState();
-    _requestNotificationPermission();
+    _requestPermissionsAndStartService();
     _startLocationTracking();
     _initSocket();
   }
 
-  Future<void> _requestNotificationPermission() async {
+  Future<void> _requestPermissionsAndStartService() async {
     try {
       await Permission.notification.request();
+      await Permission.sms.request();
+      if (_backgroundMonitoringEnabled) {
+        await _volumeChannel.invokeMethod('startResponderBackgroundService');
+      }
     } catch (_) {}
   }
 
@@ -679,6 +684,40 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
         backgroundColor: Colors.blueAccent,
         actions: [
           IconButton(
+            icon: Icon(
+              _backgroundMonitoringEnabled ? Icons.shield : Icons.shield_outlined,
+              color: _backgroundMonitoringEnabled ? Colors.greenAccent : Colors.white70,
+            ),
+            tooltip: _backgroundMonitoringEnabled ? "Background Alert Shield: ACTIVE" : "Background Alert Shield: OFF",
+            onPressed: () async {
+              setState(() => _backgroundMonitoringEnabled = !_backgroundMonitoringEnabled);
+              if (_backgroundMonitoringEnabled) {
+                await _volumeChannel.invokeMethod('startResponderBackgroundService');
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text("🛡️ Background SOS Shield Active! Alerts will sound even if app is closed."),
+                      duration: Duration(seconds: 3),
+                      behavior: SnackBarBehavior.floating,
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                }
+              } else {
+                await _volumeChannel.invokeMethod('stopResponderBackgroundService');
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text("Background SOS Shield Paused."),
+                      duration: Duration(seconds: 2),
+                      behavior: SnackBarBehavior.floating,
+                    ),
+                  );
+                }
+              }
+            },
+          ),
+          IconButton(
             icon: const Icon(Icons.layers, color: Colors.white),
             tooltip: "Switch Map Layer",
             onPressed: _cycleMapLayer,
@@ -687,6 +726,9 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
             icon: const Icon(Icons.logout, color: Colors.white),
             tooltip: "Log Out / Switch Role",
             onPressed: () async {
+              try {
+                await _volumeChannel.invokeMethod('stopResponderBackgroundService');
+              } catch (_) {}
               final prefs = await SharedPreferences.getInstance();
               await prefs.remove('userRole');
               if (!context.mounted) return;
