@@ -9,6 +9,8 @@ import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:audioplayers/audioplayers.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'role_screen.dart';
 
 enum MapLayerStyle { humanitarianOsm, standardOsm, roadDetailOsm }
@@ -54,11 +56,22 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
   MapLayerStyle _currentMapLayer = MapLayerStyle.humanitarianOsm;
   final bool _autoFollowVictim = true;
 
+  static const MethodChannel _volumeChannel = MethodChannel('com.safecommute.app/volume');
+  final AudioPlayer _alertPlayer = AudioPlayer();
+  bool _isAlarmPlaying = false;
+
   @override
   void initState() {
     super.initState();
+    _requestNotificationPermission();
     _startLocationTracking();
     _initSocket();
+  }
+
+  Future<void> _requestNotificationPermission() async {
+    try {
+      await Permission.notification.request();
+    } catch (_) {}
   }
 
   Future<void> _startLocationTracking() async {
@@ -141,6 +154,7 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
         String battery = payload['batteryMetadata']?.toString() ?? "??";
 
         LatLng victimPos = LatLng(lat, lng);
+        bool isNewAlert = !_activeAlerts.containsKey(username);
 
         setState(() {
           _activeAlerts[username] = VictimAlert(
@@ -153,6 +167,11 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
           _selectedVictimUsername ??= username;
           _statusText = "🚨 ${_activeAlerts.length} Active Emergency";
         });
+
+        // Trigger strong notification, siren, and heads-up banner on new alert!
+        if (isNewAlert) {
+          _handleNewEmergencyAlert(username, lat, lng);
+        }
 
         // If auto-follow is on and this is the active victim, smoothly track position
         if (_autoFollowVictim && _selectedVictimUsername == username) {
@@ -173,12 +192,172 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
           }
           if (_activeAlerts.isEmpty) {
             _statusText = "Connected & Monitoring";
+            _muteAlarm();
+            try {
+              _volumeChannel.invokeMethod('cancelEmergencyNotification');
+            } catch (_) {}
           } else {
             _statusText = "🚨 ${_activeAlerts.length} Active Emergency";
           }
         });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("ℹ️ SOS cancelled by $username"),
+            behavior: SnackBarBehavior.floating,
+            backgroundColor: Colors.blueGrey,
+          ),
+        );
       }
     });
+  }
+
+  Future<void> _handleNewEmergencyAlert(String username, double lat, double lng) async {
+    // 1. Native Android Heads-Up Notification & Heavy Vibration
+    try {
+      await _volumeChannel.invokeMethod('showEmergencyNotification', {
+        'title': "🚨 CRITICAL SOS: $username",
+        'body': "$username triggered emergency SOS! Live GPS coordinates receiving.",
+      });
+    } catch (_) {}
+
+    // 2. Play Urgent Audio Siren Loop
+    try {
+      await _alertPlayer.setReleaseMode(ReleaseMode.loop);
+      await _alertPlayer.play(AssetSource('siren.ogg'));
+      if (mounted) setState(() => _isAlarmPlaying = true);
+    } catch (_) {}
+
+    // 3. Heavy In-App Haptics
+    HapticFeedback.heavyImpact();
+
+    // 4. Center map immediately on victim
+    try {
+      _mapController.move(LatLng(lat, lng), 16.5);
+    } catch (_) {}
+
+    // 5. In-App High-Visibility Alert Dialog
+    if (mounted) {
+      _showEmergencyModal(username, lat, lng);
+    }
+  }
+
+  void _muteAlarm() async {
+    try {
+      await _alertPlayer.stop();
+      if (mounted) setState(() => _isAlarmPlaying = false);
+    } catch (_) {}
+  }
+
+  void _showEmergencyModal(String username, double lat, double lng) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          backgroundColor: Colors.white,
+          titlePadding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+          contentPadding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+          title: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.red.shade100,
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.warning_amber_rounded, color: Colors.redAccent, size: 28),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text(
+                  "🚨 CRITICAL SOS!",
+                  style: TextStyle(fontWeight: FontWeight.w900, color: Colors.redAccent, fontSize: 18),
+                ),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                "$username triggered an urgent SOS alert!",
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                "Distance: ${_formatDistance(lat, lng)}",
+                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.blueAccent),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                "Real-time GPS coordinates are streaming. Immediate response is required.",
+                style: TextStyle(fontSize: 13, color: Colors.black54),
+              ),
+              const SizedBox(height: 20),
+              // Big Turn-by-Turn GPS Button
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.redAccent,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  icon: const Icon(Icons.navigation, size: 22),
+                  label: const Text(
+                    "Start Turn-by-Turn GPS",
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                  ),
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    _muteAlarm();
+                    _startTurnByTurnNavigation(lat, lng);
+                  },
+                ),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                      icon: const Icon(Icons.volume_off, size: 18),
+                      label: const Text("Mute Siren", style: TextStyle(fontWeight: FontWeight.bold)),
+                      onPressed: () {
+                        _muteAlarm();
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.blueAccent,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                      icon: const Icon(Icons.map, size: 18),
+                      label: const Text("View Map", style: TextStyle(fontWeight: FontWeight.bold)),
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   void _startTurnByTurnNavigation(double lat, double lng) async {
@@ -366,6 +545,8 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
   @override
   void dispose() {
     _positionStream?.cancel();
+    _alertPlayer.stop();
+    _alertPlayer.dispose();
     socket.dispose();
     super.dispose();
   }
@@ -577,6 +758,48 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
                       ),
                     );
                   },
+                ),
+              ),
+            ),
+
+          // Active Siren Mute Bar
+          if (_isAlarmPlaying)
+            Positioned(
+              top: _activeAlerts.length > 1 ? 60 : 14,
+              left: 14,
+              right: 14,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.red.shade900,
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: const [
+                    BoxShadow(color: Colors.redAccent, blurRadius: 10, spreadRadius: 1),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.campaign, color: Colors.white, size: 22),
+                    const SizedBox(width: 8),
+                    const Expanded(
+                      child: Text(
+                        "🚨 CRITICAL SOS ALARM ACTIVE",
+                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 12),
+                      ),
+                    ),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.white,
+                        foregroundColor: Colors.red.shade900,
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      icon: const Icon(Icons.volume_off, size: 15),
+                      label: const Text("MUTE", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11)),
+                      onPressed: _muteAlarm,
+                    ),
+                  ],
                 ),
               ),
             ),

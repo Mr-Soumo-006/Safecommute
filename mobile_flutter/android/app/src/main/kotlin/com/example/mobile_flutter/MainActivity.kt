@@ -1,10 +1,19 @@
 package com.example.mobile_flutter
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.provider.Settings
 import android.telephony.SmsManager
 import android.text.TextUtils
@@ -117,9 +126,113 @@ class MainActivity: FlutterActivity() {
                     openAppSettings()
                     result.success(true)
                 }
+                "showEmergencyNotification" -> {
+                    val title = call.argument<String>("title") ?: "🚨 EMERGENCY SOS ALERT"
+                    val body = call.argument<String>("body") ?: "A commuter needs immediate help!"
+                    showEmergencyNotification(title, body)
+                    result.success(true)
+                }
+                "cancelEmergencyNotification" -> {
+                    cancelEmergencyNotification()
+                    result.success(true)
+                }
+                "triggerHeavyVibration" -> {
+                    triggerHeavyVibration()
+                    result.success(true)
+                }
                 else -> result.notImplemented()
             }
         }
+    }
+
+    private fun showEmergencyNotification(title: String, body: String) {
+        try {
+            triggerHeavyVibration()
+
+            val channelId = "safecommute_emergency_channel"
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                var channel = notificationManager.getNotificationChannel(channelId)
+                if (channel == null) {
+                    channel = NotificationChannel(
+                        channelId,
+                        "Critical SOS Emergency Alerts",
+                        NotificationManager.IMPORTANCE_HIGH
+                    ).apply {
+                        description = "High-priority alarms when a commuter triggers an SOS"
+                        enableVibration(true)
+                        vibrationPattern = longArrayOf(0, 500, 200, 500, 200, 800)
+                        enableLights(true)
+                        lightColor = Color.RED
+                        lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                    }
+                    notificationManager.createNotificationChannel(channel)
+                }
+            }
+
+            val launchIntent = Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                this,
+                0,
+                launchIntent,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE else PendingIntent.FLAG_UPDATE_CURRENT
+            )
+
+            val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Notification.Builder(this, channelId)
+            } else {
+                @Suppress("DEPRECATION")
+                Notification.Builder(this)
+            }
+
+            builder.setSmallIcon(R.mipmap.launcher_icon)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setAutoCancel(true)
+                .setContentIntent(pendingIntent)
+                .setPriority(Notification.PRIORITY_MAX)
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+                builder.setStyle(Notification.BigTextStyle().bigText(body))
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                builder.setCategory(Notification.CATEGORY_ALARM)
+                builder.setVisibility(Notification.VISIBILITY_PUBLIC)
+            }
+
+            notificationManager.notify(911, builder.build())
+        } catch (_: Exception) {}
+    }
+
+    private fun cancelEmergencyNotification() {
+        try {
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            notificationManager?.cancel(911)
+        } catch (_: Exception) {}
+    }
+
+    private fun triggerHeavyVibration() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                val vibrator = vibratorManager?.defaultVibrator
+                val pattern = longArrayOf(0, 500, 200, 500, 200, 800)
+                vibrator?.vibrate(VibrationEffect.createWaveform(pattern, -1))
+            } else {
+                @Suppress("DEPRECATION")
+                val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    val pattern = longArrayOf(0, 500, 200, 500, 200, 800)
+                    vibrator?.vibrate(VibrationEffect.createWaveform(pattern, -1))
+                } else {
+                    @Suppress("DEPRECATION")
+                    vibrator?.vibrate(longArrayOf(0, 500, 200, 500, 200, 800), -1)
+                }
+            }
+        } catch (_: Exception) {}
     }
 
     private fun openAppSettings() {
