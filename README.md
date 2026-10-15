@@ -148,7 +148,9 @@ node server.js
 - [x] **Phase 1: Personal Alert & Active Defense** (Complete)
   - Native Kotlin SMS, Shake trigger, Siren alarm, Contact address book with search.
 - [x] **Phase 2: Police & Responder Network** (Complete)
-  - Cloud relay, Sticky role auto-login, Responder Blue Dot GPS, live distance counter, turn-by-turn Google Maps navigation, multi-victim tracking.
+  - Cloud relay, Sticky role auto-login, Responder Blue Dot GPS, live distance counter, turn-by-turn navigation, multi-victim tracking.
+  - 24/7 Background Alert Shield with lock-screen sirens, heavy vibration pulses, and quick-mute controls.
+  - Zero-key emergency road map layers (Humanitarian HOT & OSM-FR) and automatic emergency SMS wake-up reception.
 - [ ] **Phase 3: Hardware Wearable & Electronics** (Next Phase)
   - ESP32 BLE panic keychain/ring, pull-pin trigger mechanism, automatic peripheral pairing.
 - [ ] **Phase 4: AI Predictive Safety Layer**
