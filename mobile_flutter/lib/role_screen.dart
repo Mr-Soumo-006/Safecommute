@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'main.dart'; // To access the Commuter Dashboard
-import 'responder_map.dart'; // We will build this next!
+import 'main.dart'; // To access the Unified Safety Screen
 
 class RoleSelectionScreen extends StatelessWidget {
   const RoleSelectionScreen({super.key});
@@ -50,7 +49,7 @@ class RoleSelectionScreen extends StatelessWidget {
                   if (!context.mounted) return;
                   Navigator.pushReplacement(
                     context,
-                    MaterialPageRoute(builder: (context) => const DashboardScreen()),
+                    MaterialPageRoute(builder: (context) => const UnifiedSafetyScreen(initialTabIndex: 0)),
                   );
                 },
                 child: const Row(
@@ -78,7 +77,7 @@ class RoleSelectionScreen extends StatelessWidget {
                   if (!context.mounted) return;
                   Navigator.pushReplacement(
                     context,
-                    MaterialPageRoute(builder: (context) => const ResponderMapScreen()),
+                    MaterialPageRoute(builder: (context) => const UnifiedSafetyScreen(initialTabIndex: 1)),
                   );
                 },
                 child: const Row(

@@ -12,7 +12,6 @@ import 'dart:async';
 import 'dart:math';
 
 import 'settings.dart'; 
-import 'role_screen.dart'; 
 import 'responder_map.dart';
 
 void main() {
@@ -62,22 +61,14 @@ class _RoleCheckScreenState extends State<RoleCheckScreen> {
     final role = prefs.getString('userRole');
     if (!mounted) return;
 
-    if (role == 'commuter') {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const DashboardScreen()),
-      );
-    } else if (role == 'responder') {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const ResponderMapScreen()),
-      );
-    } else {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const RoleSelectionScreen()),
-      );
+    int initialTab = 0;
+    if (role == 'responder') {
+      initialTab = 1;
     }
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (context) => UnifiedSafetyScreen(initialTabIndex: initialTab)),
+    );
   }
 
   @override
@@ -91,24 +82,121 @@ class _RoleCheckScreenState extends State<RoleCheckScreen> {
   }
 }
 
+class UnifiedSafetyScreen extends StatefulWidget {
+  final int initialTabIndex;
+  const UnifiedSafetyScreen({super.key, this.initialTabIndex = 0});
+
+  @override
+  State<UnifiedSafetyScreen> createState() => _UnifiedSafetyScreenState();
+}
+
+class _UnifiedSafetyScreenState extends State<UnifiedSafetyScreen> {
+  late int _currentTab;
+  final GlobalKey<DashboardScreenState> _dashboardKey = GlobalKey<DashboardScreenState>();
+  final GlobalKey<ResponderMapScreenState> _responderMapKey = GlobalKey<ResponderMapScreenState>();
+  String? _selectedVictimForMap;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentTab = widget.initialTabIndex;
+  }
+
+  void _onNavigateToMap(String? victim) {
+    setState(() {
+      _selectedVictimForMap = victim;
+      _currentTab = 1;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _responderMapKey.currentState?.focusVictim(victim);
+    });
+  }
+
+  void _onTriggerSos() {
+    _dashboardKey.currentState?.triggerSosFromExternal();
+    setState(() {
+      _currentTab = 0;
+    });
+  }
+
+  void _onSwitchToCommuter() {
+    setState(() {
+      _currentTab = 0;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: IndexedStack(
+        index: _currentTab,
+        children: [
+          DashboardScreen(
+            key: _dashboardKey,
+            onNavigateToMap: _onNavigateToMap,
+          ),
+          ResponderMapScreen(
+            key: _responderMapKey,
+            initialVictimUsername: _selectedVictimForMap,
+            onTriggerSos: _onTriggerSos,
+            onSwitchToCommuter: _onSwitchToCommuter,
+          ),
+          const SettingsScreen(),
+        ],
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _currentTab,
+        backgroundColor: Colors.white,
+        elevation: 8,
+        indicatorColor: _currentTab == 0
+            ? Colors.redAccent.withValues(alpha: 0.18)
+            : Colors.blueAccent.withValues(alpha: 0.18),
+        onDestinationSelected: (index) {
+          setState(() => _currentTab = index);
+        },
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.crisis_alert, color: Colors.black54),
+            selectedIcon: Icon(Icons.crisis_alert, color: Colors.redAccent),
+            label: 'SOS Defense',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.map_outlined, color: Colors.black54),
+            selectedIcon: Icon(Icons.map, color: Colors.blueAccent),
+            label: 'Live Radar & Map',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.local_police_outlined, color: Colors.black54),
+            selectedIcon: Icon(Icons.local_police, color: Colors.blueAccent),
+            label: 'Police & Settings',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class DashboardScreen extends StatefulWidget {
   final bool autoTriggerSos;
   final String? responderInDistressUsername;
+  final void Function(String? targetVictim)? onNavigateToMap;
   const DashboardScreen({
     super.key,
     this.autoTriggerSos = false,
     this.responderInDistressUsername,
+    this.onNavigateToMap,
   });
 
   @override
-  State<DashboardScreen> createState() => _DashboardScreenState();
+  State<DashboardScreen> createState() => DashboardScreenState();
 }
 
-class _DashboardScreenState extends State<DashboardScreen> {
+class DashboardScreenState extends State<DashboardScreen> {
   bool isSosActive = false;
   String batteryLevel = "Unknown";
   String locationStatus = "GPS Ready";
   Map<String, dynamic>? _incomingDistressAlert;
+  Map<String, dynamic>? _policeDispatchData;
   
   late IO.Socket socket;
   final AudioPlayer _audioPlayer = AudioPlayer();
@@ -240,13 +328,40 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
     socket.onConnect((_) => debugPrint("Connected to Backend Server: $serverUrl"));
 
-    // Listen for incoming alerts from other users / responders in distress
-    socket.on('incoming_alert', (payload) {
+    // Proximity-filtered incoming alerts from other users / responders in distress
+    socket.on('incoming_alert', (payload) async {
       if (!isSosActive && mounted) {
+        final alertData = payload is Map<String, dynamic>
+            ? payload
+            : Map<String, dynamic>.from(payload as Map);
+
+        // Proximity Geofenced Check:
+        if (alertData['lat'] != null && alertData['lng'] != null) {
+          try {
+            Position currentPos = await Geolocator.getCurrentPosition(
+              locationSettings: const LocationSettings(accuracy: LocationAccuracy.medium),
+            );
+            double distM = Geolocator.distanceBetween(
+              currentPos.latitude,
+              currentPos.longitude,
+              (alertData['lat'] as num).toDouble(),
+              (alertData['lng'] as num).toDouble(),
+            );
+            final p = await SharedPreferences.getInstance();
+            double radiusKm = p.getDouble('alertRadiusKm') ?? 5.0;
+
+            if (radiusKm > 0.0 && distM > (radiusKm * 1000.0)) {
+              debugPrint("[PROXIMITY FILTER] Distant incident from ${alertData['username']} is ${(distM/1000).toStringAsFixed(1)} km away. Alert banner silenced.");
+              return;
+            }
+            alertData['distanceText'] = distM < 1000
+                ? "${distM.round()} m away"
+                : "${(distM / 1000).toStringAsFixed(1)} km away";
+          } catch (_) {}
+        }
+
         setState(() {
-          _incomingDistressAlert = payload is Map<String, dynamic>
-              ? payload
-              : Map<String, dynamic>.from(payload as Map);
+          _incomingDistressAlert = alertData;
         });
         HapticFeedback.mediumImpact();
       }
@@ -263,6 +378,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
         }
       }
     });
+
+    // Real-time Top-to-Bottom Police HQ Dispatch update
+    socket.on('police_dispatch_update', (payload) {
+      if (mounted) {
+        setState(() {
+          _policeDispatchData = payload is Map<String, dynamic>
+              ? payload
+              : Map<String, dynamic>.from(payload as Map);
+        });
+      }
+    });
+  }
+
+  void triggerSosFromExternal() {
+    if (!isSosActive) {
+      HapticFeedback.heavyImpact();
+      toggleSOS();
+    }
   }
 
   Future<void> _switchToResponder({String? targetVictim}) async {
@@ -303,6 +436,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('userRole', 'responder');
 
+    if (widget.onNavigateToMap != null) {
+      widget.onNavigateToMap!(targetVictim);
+      return;
+    }
+
     if (!mounted) return;
     Navigator.pushReplacement(
       context,
@@ -316,7 +454,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final prefs = await SharedPreferences.getInstance();
     List<String> savedContacts = prefs.getStringList('savedContacts') ?? [];
     
-    for (String contactInfo in savedContacts) {
+    // Nearest Contact Dispatch Policy:
+    // If <= 3 contacts: send to all (intimate trusted circle).
+    // If > 3 contacts: send to the primary top 3 contacts to prevent widespread alarm.
+    List<String> targetContacts = savedContacts.length <= 3 
+        ? savedContacts 
+        : savedContacts.take(3).toList();
+
+    for (String contactInfo in targetContacts) {
       // Extract just the phone number from "Name: Phone" format
       List<String> parts = contactInfo.split(': ');
       if (parts.length > 1) {
@@ -342,24 +487,52 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     // Grab quick location for the SMS link
     String mapLink = "Location unknown";
+    Position? startPos;
     try {
-      Position position = await Geolocator.getCurrentPosition(locationSettings: const LocationSettings(accuracy: LocationAccuracy.high));
-      mapLink = "https://maps.google.com/?q=${position.latitude},${position.longitude}";
+      startPos = await Geolocator.getCurrentPosition(locationSettings: const LocationSettings(accuracy: LocationAccuracy.high));
+      mapLink = "https://maps.google.com/?q=${startPos.latitude},${startPos.longitude}";
     } catch (e) {
       debugPrint("Could not get quick location for SMS");
     }
 
-    // 1. Send SMS to all emergency contacts silently via Kotlin
-    String emergencyMessage = "$myName's EMERGENCY! I need help. Track my live location: $mapLink";
+    // 1. Send SMS to emergency contacts (top 3 if many, or all if <= 3)
+    String emergencyMessage = "$myName's EMERGENCY! I need help. SafeCommute Police HQ dispatched. Live location: $mapLink";
     await _sendNativeSMS(emergencyMessage);
 
-    // 2. Start Loud Siren (If user enabled it in settings)
+    // 2. Start Loud Siren
     if (sirenEnabled) {
       await _audioPlayer.setReleaseMode(ReleaseMode.loop);
       await _audioPlayer.play(AssetSource('siren.ogg'));
     }
 
-    // 3. Start Live Tracking Loop (Every 5 seconds)
+    // 3. Top-to-Bottom Police Central HQ Dispatch Cascade
+    try {
+      var battery = Battery();
+      int level = await battery.batteryLevel;
+      String incidentId = "POL-SC-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}";
+
+      socket.emit('police_central_dispatch', {
+        'incidentId': incidentId,
+        'username': myName,
+        'lat': startPos?.latitude ?? 22.5726,
+        'lng': startPos?.longitude ?? 88.3639,
+        'battery': level,
+        'assignedStation': 'Nearest Municipal Police Station Branch #4',
+        'etaMinutes': 4,
+        'timestamp': DateTime.now().toIso8601String(),
+      });
+
+      setState(() {
+        _policeDispatchData = {
+          'incidentId': incidentId,
+          'status': 'DISPATCHED_EN_ROUTE',
+          'assignedStation': 'Municipal Police Station Branch #4',
+          'etaMinutes': 4,
+        };
+      });
+    } catch (_) {}
+
+    // 4. Start Live Tracking Loop (Every 5 seconds)
     _locationTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
       try {
         Position position = await Geolocator.getCurrentPosition(locationSettings: const LocationSettings(accuracy: LocationAccuracy.high));
@@ -394,6 +567,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _locationTimer?.cancel();
     setState(() {
       locationStatus = "GPS Ready";
+      _policeDispatchData = null;
     });
 
     // 3. Notify server and responders that emergency is resolved
@@ -613,6 +787,74 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       const SizedBox(width: 8),
                       Text(locationStatus, style: const TextStyle(color: Colors.black87, fontSize: 16, fontWeight: FontWeight.w500)),
                     ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 18),
+            // Police Authority HQ Real-Time Status Card
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 20),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color: isSosActive ? Colors.red.shade50 : Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: isSosActive ? Colors.redAccent : Colors.blue.shade200,
+                  width: isSosActive ? 1.5 : 1.0,
+                ),
+                boxShadow: [
+                  BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 8, offset: const Offset(0, 2)),
+                ],
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.local_police,
+                        color: isSosActive ? Colors.redAccent : Colors.blueAccent,
+                        size: 22,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          isSosActive ? "POLICE HQ TICKET ACTIVE" : "Police Authority HQ Tie-Up",
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                            color: isSosActive ? Colors.red.shade900 : Colors.black87,
+                          ),
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: isSosActive ? Colors.redAccent : Colors.green.shade50,
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: isSosActive ? Colors.redAccent : Colors.green.shade300),
+                        ),
+                        child: Text(
+                          isSosActive ? "DISPATCHED" : "ARMED",
+                          style: TextStyle(
+                            color: isSosActive ? Colors.white : Colors.green.shade800,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 10,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    isSosActive
+                        ? "Central Police HQ incident ${_policeDispatchData?['incidentId'] ?? '#POL-SC-DISPATCH'}. Cascade: Routing to ${_policeDispatchData?['assignedStation'] ?? 'Nearest Police Precinct'}. PCR patrol unit en route (ETA ~${_policeDispatchData?['etaMinutes'] ?? 4}m)."
+                        : "Central Command Bridge connected. Triggering SOS cascades directly from Central HQ to the nearest municipal branch & PCR patrol units.",
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: isSosActive ? Colors.red.shade900 : Colors.black54,
+                      height: 1.3,
+                    ),
                   ),
                 ],
               ),

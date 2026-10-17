@@ -20,6 +20,7 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
   bool _accessibilityServiceActive = false;
   String _volumeButtonType = "down"; // "down" or "up"
   int _volumeClickCount = 3; // 2, 3, 4, 5
+  double _alertRadiusKm = 5.0; // 2.0, 5.0, 10.0, 0.0 (All)
   List<String> _savedContacts = [];
   String _myUsername = "";
 
@@ -71,6 +72,7 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
       _volumeTriggerEnabled = prefs.getBool('volumeTriggerEnabled') ?? true;
       _volumeButtonType = prefs.getString('volumeButtonType') ?? "down";
       _volumeClickCount = prefs.getInt('volumeClickCount') ?? 3;
+      _alertRadiusKm = prefs.getDouble('alertRadiusKm') ?? 5.0;
       _savedContacts = prefs.getStringList('savedContacts') ?? [];
       _myUsername = prefs.getString('username') ?? "";
       _usernameController.text = _myUsername;
@@ -86,6 +88,7 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
     await prefs.setBool('volumeTriggerEnabled', _volumeTriggerEnabled);
     await prefs.setString('volumeButtonType', _volumeButtonType);
     await prefs.setInt('volumeClickCount', _volumeClickCount);
+    await prefs.setDouble('alertRadiusKm', _alertRadiusKm);
     await _syncToNative();
   }
 
@@ -523,6 +526,152 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
                 setState(() => _sirenEnabled = value);
                 _saveToggleSettings();
               },
+            ),
+            
+            const SizedBox(height: 12),
+            // Smart Proximity Notification Filter
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.radar, color: Colors.blueAccent, size: 20),
+                      SizedBox(width: 8),
+                      Text("Responder Alert Proximity Radius", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.black87)),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    "Only nearest responders will receive full siren alerts. Responders outside this radius will not be disturbed or stressed.",
+                    style: TextStyle(fontSize: 12, color: Colors.black54),
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      ChoiceChip(
+                        label: const Text("2 km (Local)"),
+                        selected: _alertRadiusKm == 2.0,
+                        selectedColor: Colors.blueAccent.withValues(alpha: 0.2),
+                        onSelected: (selected) {
+                          if (selected) {
+                            setState(() => _alertRadiusKm = 2.0);
+                            _saveToggleSettings();
+                          }
+                        },
+                      ),
+                      ChoiceChip(
+                        label: const Text("5 km (Standard)"),
+                        selected: _alertRadiusKm == 5.0,
+                        selectedColor: Colors.blueAccent.withValues(alpha: 0.2),
+                        onSelected: (selected) {
+                          if (selected) {
+                            setState(() => _alertRadiusKm = 5.0);
+                            _saveToggleSettings();
+                          }
+                        },
+                      ),
+                      ChoiceChip(
+                        label: const Text("10 km (City)"),
+                        selected: _alertRadiusKm == 10.0,
+                        selectedColor: Colors.blueAccent.withValues(alpha: 0.2),
+                        onSelected: (selected) {
+                          if (selected) {
+                            setState(() => _alertRadiusKm = 10.0);
+                            _saveToggleSettings();
+                          }
+                        },
+                      ),
+                      ChoiceChip(
+                        label: const Text("All (No Filter)"),
+                        selected: _alertRadiusKm == 0.0,
+                        selectedColor: Colors.blueAccent.withValues(alpha: 0.2),
+                        onSelected: (selected) {
+                          if (selected) {
+                            setState(() => _alertRadiusKm = 0.0);
+                            _saveToggleSettings();
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 25),
+            const Text("Police Authority Integration", style: TextStyle(color: Colors.redAccent, fontSize: 18, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 10),
+            Card(
+              color: Colors.white,
+              elevation: 2,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.shade50,
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(Icons.local_police, color: Colors.blueAccent, size: 28),
+                        ),
+                        const SizedBox(width: 12),
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                "Central Police HQ Enterprise Tie-Up",
+                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.black87),
+                              ),
+                              SizedBox(height: 2),
+                              Text(
+                                "Top-to-Bottom Regional Command Cascade",
+                                style: TextStyle(fontSize: 12, color: Colors.green, fontWeight: FontWeight.bold),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Colors.green.shade50,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.green.shade300),
+                          ),
+                          child: const Text("ACTIVE", style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 11)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      "SafeCommute has a direct enterprise integration with Central Police Headquarters. When you trigger an SOS, the main command center logs the ticket and instantly routes it to the nearest local municipal branch and patrol PCR vans automatically.",
+                      style: TextStyle(color: Colors.black87, fontSize: 12, height: 1.4),
+                    ),
+                    const Divider(height: 20),
+                    const Row(
+                      children: [
+                        Icon(Icons.check_circle_outline, color: Colors.blueAccent, size: 16),
+                        SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            "Top-to-Bottom Dispatch: Central HQ ➡️ Local Station ➡️ PCR Van",
+                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.black87),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
             ),
             
             const SizedBox(height: 25),
