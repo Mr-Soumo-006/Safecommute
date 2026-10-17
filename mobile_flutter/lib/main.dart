@@ -92,7 +92,13 @@ class _RoleCheckScreenState extends State<RoleCheckScreen> {
 }
 
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({super.key});
+  final bool autoTriggerSos;
+  final String? responderInDistressUsername;
+  const DashboardScreen({
+    super.key,
+    this.autoTriggerSos = false,
+    this.responderInDistressUsername,
+  });
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
@@ -102,6 +108,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool isSosActive = false;
   String batteryLevel = "Unknown";
   String locationStatus = "GPS Ready";
+  Map<String, dynamic>? _incomingDistressAlert;
   
   late IO.Socket socket;
   final AudioPlayer _audioPlayer = AudioPlayer();
@@ -122,6 +129,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _requestPermissions();
     _initShakeDetection();
     _initVolumeButtonDetection();
+
+    if (widget.autoTriggerSos) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!isSosActive) {
+          toggleSOS();
+        }
+      });
+    }
   }
 
   void _initVolumeButtonDetection() {
@@ -224,6 +239,77 @@ class _DashboardScreenState extends State<DashboardScreen> {
       'autoConnect': true,
     });
     socket.onConnect((_) => debugPrint("Connected to Backend Server: $serverUrl"));
+
+    // Listen for incoming alerts from other users / responders in distress
+    socket.on('incoming_alert', (payload) {
+      if (!isSosActive && mounted) {
+        setState(() {
+          _incomingDistressAlert = payload is Map<String, dynamic>
+              ? payload
+              : Map<String, dynamic>.from(payload as Map);
+        });
+        HapticFeedback.mediumImpact();
+      }
+    });
+
+    socket.on('alert_cancelled', (payload) {
+      if (mounted) {
+        String cancelledUser = payload['username']?.toString() ?? "";
+        if (_incomingDistressAlert != null &&
+            (_incomingDistressAlert!['username'] == cancelledUser || cancelledUser.isEmpty)) {
+          setState(() {
+            _incomingDistressAlert = null;
+          });
+        }
+      }
+    });
+  }
+
+  Future<void> _switchToResponder({String? targetVictim}) async {
+    if (isSosActive) {
+      final shouldSwitch = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Colors.redAccent, size: 26),
+              SizedBox(width: 8),
+              Text("SOS is Active!", style: TextStyle(fontWeight: FontWeight.bold)),
+            ],
+          ),
+          content: const Text(
+            "You have an ongoing emergency SOS. Do you want to cancel your SOS and switch to Responder mode to assist?",
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text("Keep SOS Active"),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text("Cancel SOS & Switch", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
+      );
+
+      if (shouldSwitch != true) return;
+      await _stopActiveDefense();
+      setState(() => isSosActive = false);
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('userRole', 'responder');
+
+    if (!mounted) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ResponderMapScreen(initialVictimUsername: targetVictim),
+      ),
+    );
   }
 
   Future<void> _sendNativeSMS(String message) async {
@@ -348,28 +434,122 @@ class _DashboardScreenState extends State<DashboardScreen> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         actions: [
+          // Rapid Dual-Role Switch Button: Instant transition to Responder Mode
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10.0, horizontal: 4.0),
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blueAccent,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              ),
+              icon: const Icon(Icons.shield, size: 16, color: Colors.white),
+              label: const Text(
+                "Responder Map",
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+              ),
+              onPressed: () => _switchToResponder(),
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.settings),
+            tooltip: "Settings",
             onPressed: () {
-              // Navigate to the new Settings Screen!
+              // Navigate to Settings Screen
               Navigator.push(context, MaterialPageRoute(builder: (context) => const SettingsScreen()));
             },
           )
         ],
       ),
-      body: Center(
+      body: SafeArea(
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text(
-              isSosActive ? "EMERGENCY ACTIVE" : "READY TO TRACK",
-              style: TextStyle(
-                color: isSosActive ? Colors.redAccent : Colors.black54,
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 1.5,
+            // Instant Distress Alert Banner for Commuter (Commuter becomes Responder)
+            if (_incomingDistressAlert != null && !isSosActive)
+              Container(
+                margin: const EdgeInsets.fromLTRB(16, 6, 16, 10),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Colors.red.shade900, Colors.redAccent.shade700],
+                  ),
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.redAccent.withValues(alpha: 0.4),
+                      blurRadius: 8,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.crisis_alert, color: Colors.white, size: 24),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            "🚨 SOS: ${_incomingDistressAlert!['username'] ?? 'Someone'} NEEDS HELP!",
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          const Text(
+                            "Tap to switch to Responder Mode & navigate.",
+                            style: TextStyle(color: Colors.white70, fontSize: 11),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.white,
+                        foregroundColor: Colors.red.shade900,
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                      onPressed: () {
+                        final victim = _incomingDistressAlert!['username']?.toString();
+                        _switchToResponder(targetVictim: victim);
+                      },
+                      child: const Text(
+                        "RESPOND",
+                        style: TextStyle(fontWeight: FontWeight.w900, fontSize: 11),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    GestureDetector(
+                      onTap: () => setState(() => _incomingDistressAlert = null),
+                      child: const Icon(Icons.close, color: Colors.white70, size: 18),
+                    ),
+                  ],
+                ),
               ),
-            ),
+
+            Expanded(
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      isSosActive ? "EMERGENCY ACTIVE" : "READY TO TRACK",
+                      style: TextStyle(
+                        color: isSosActive ? Colors.redAccent : Colors.black54,
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1.5,
+                      ),
+                    ),
             const SizedBox(height: 50),
             
             // Pulsing SOS Button
@@ -440,6 +620,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ],
         ),
       ),
-    );
-  }
+    ),
+  ],
+),
+),
+);
+}
 }

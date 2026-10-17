@@ -11,7 +11,10 @@ import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 import 'role_screen.dart';
+import 'main.dart';
+import 'settings.dart';
 
 enum MapLayerStyle { humanitarianOsm, standardOsm, roadDetailOsm }
 
@@ -32,7 +35,8 @@ class VictimAlert {
 }
 
 class ResponderMapScreen extends StatefulWidget {
-  const ResponderMapScreen({super.key});
+  final String? initialVictimUsername;
+  const ResponderMapScreen({super.key, this.initialVictimUsername});
 
   @override
   State<ResponderMapScreen> createState() => _ResponderMapScreenState();
@@ -61,12 +65,87 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
   bool _isAlarmPlaying = false;
   bool _backgroundMonitoringEnabled = true;
 
+  StreamSubscription<AccelerometerEvent>? _shakeSubscription;
+  final List<DateTime> _volumePressTimestamps = [];
+
   @override
   void initState() {
     super.initState();
+    _selectedVictimUsername = widget.initialVictimUsername;
     _requestPermissionsAndStartService();
     _startLocationTracking();
     _initSocket();
+    _initVolumeButtonDetection();
+    _initShakeDetection();
+  }
+
+  void _initVolumeButtonDetection() {
+    _volumeChannel.setMethodCallHandler((call) async {
+      if (call.method == "triggerSosNow") {
+        _triggerResponderEmergencyDistress();
+      } else if (call.method == "onVolumePressed") {
+        String direction = call.arguments as String? ?? "down";
+
+        final prefs = await SharedPreferences.getInstance();
+        bool volumeTriggerEnabled = prefs.getBool('volumeTriggerEnabled') ?? true;
+        if (!volumeTriggerEnabled) return;
+
+        String selectedButton = prefs.getString('volumeButtonType') ?? "down";
+        int requiredClicks = prefs.getInt('volumeClickCount') ?? 3;
+
+        if (direction == selectedButton) {
+          final now = DateTime.now();
+          _volumePressTimestamps.add(now);
+          _volumePressTimestamps.removeWhere((t) => now.difference(t).inMilliseconds > 2000);
+
+          if (_volumePressTimestamps.length >= requiredClicks) {
+            _volumePressTimestamps.clear();
+            _triggerResponderEmergencyDistress();
+          }
+        }
+      }
+    });
+  }
+
+  void _initShakeDetection() {
+    _shakeSubscription = accelerometerEventStream().listen((AccelerometerEvent event) async {
+      double gForce = math.sqrt(event.x * event.x + event.y * event.y + event.z * event.z) / 9.8;
+      if (gForce > 3.0) {
+        final prefs = await SharedPreferences.getInstance();
+        bool shakeEnabled = prefs.getBool('shakeEnabled') ?? true;
+        if (shakeEnabled) {
+          _triggerResponderEmergencyDistress();
+        }
+      }
+    });
+  }
+
+  Future<void> _triggerResponderEmergencyDistress() async {
+    HapticFeedback.heavyImpact();
+    _muteAlarm();
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('userRole', 'commuter');
+
+    if (!mounted) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const DashboardScreen(autoTriggerSos: true),
+      ),
+    );
+  }
+
+  Future<void> _switchToCommuter() async {
+    _muteAlarm();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('userRole', 'commuter');
+
+    if (!mounted) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (context) => const DashboardScreen()),
+    );
   }
 
   Future<void> _requestPermissionsAndStartService() async {
@@ -590,6 +669,7 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
   @override
   void dispose() {
     _positionStream?.cancel();
+    _shakeSubscription?.cancel();
     _alertPlayer.stop();
     _alertPlayer.dispose();
     socket.dispose();
@@ -723,6 +803,22 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
         ),
         backgroundColor: Colors.blueAccent,
         actions: [
+          // Rapid Dual-Role Switch Button: Instant transition to Commuter Mode
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10.0, horizontal: 4.0),
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.white,
+                foregroundColor: Colors.blue.shade900,
+                elevation: 0,
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              ),
+              icon: const Icon(Icons.directions_walk, size: 16, color: Colors.blueAccent),
+              label: const Text("Commuter", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+              onPressed: _switchToCommuter,
+            ),
+          ),
           IconButton(
             icon: Icon(
               _backgroundMonitoringEnabled ? Icons.shield : Icons.shield_outlined,
@@ -736,24 +832,65 @@ class _ResponderMapScreenState extends State<ResponderMapScreen> {
             tooltip: "Switch Map Layer",
             onPressed: _cycleMapLayer,
           ),
-          IconButton(
-            icon: const Icon(Icons.logout, color: Colors.white),
-            tooltip: "Log Out / Switch Role",
-            onPressed: () async {
-              try {
-                await _volumeChannel.invokeMethod('stopResponderBackgroundService');
-              } catch (_) {}
-              final prefs = await SharedPreferences.getInstance();
-              await prefs.remove('userRole');
-              if (!context.mounted) return;
-              Navigator.pushAndRemoveUntil(
-                context,
-                MaterialPageRoute(builder: (context) => const RoleSelectionScreen()),
-                (route) => false,
-              );
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert, color: Colors.white),
+            tooltip: "More Options",
+            onSelected: (val) async {
+              if (val == 'settings') {
+                Navigator.push(context, MaterialPageRoute(builder: (context) => const SettingsScreen()));
+              } else if (val == 'logout') {
+                try {
+                  await _volumeChannel.invokeMethod('stopResponderBackgroundService');
+                } catch (_) {}
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.remove('userRole');
+                if (!context.mounted) return;
+                Navigator.pushAndRemoveUntil(
+                  context,
+                  MaterialPageRoute(builder: (context) => const RoleSelectionScreen()),
+                  (route) => false,
+                );
+              }
             },
+            itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: 'settings',
+                child: Row(
+                  children: [
+                    Icon(Icons.settings, color: Colors.black87, size: 20),
+                    SizedBox(width: 10),
+                    Text("Emergency Settings"),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'logout',
+                child: Row(
+                  children: [
+                    Icon(Icons.logout, color: Colors.redAccent, size: 20),
+                    SizedBox(width: 10),
+                    Text("Log Out / Reset Role"),
+                  ],
+                ),
+              ),
+            ],
           ),
         ],
+      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.startFloat,
+      floatingActionButton: Padding(
+        padding: EdgeInsets.only(bottom: currentVictim != null ? 180.0 : 0.0),
+        child: FloatingActionButton.extended(
+          heroTag: "responder_panic_sos_btn",
+          backgroundColor: Colors.red.shade800,
+          elevation: 6,
+          icon: const Icon(Icons.crisis_alert, color: Colors.white, size: 22),
+          label: const Text(
+            "I'M IN DANGER (SOS)",
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, letterSpacing: 0.5),
+          ),
+          onPressed: _triggerResponderEmergencyDistress,
+        ),
       ),
       body: Stack(
         children: [
