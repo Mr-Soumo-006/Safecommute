@@ -67,6 +67,12 @@ class MainActivity: FlutterActivity() {
             intent.removeExtra("trigger_sos_direct")
             notifySosTriggered()
         }
+        if (intent?.getBooleanExtra("open_responder_map", false) == true) {
+            intent.removeExtra("open_responder_map")
+            instance?.runOnUiThread {
+                instance?.volumeChannel?.invokeMethod("openResponderMap", null)
+            }
+        }
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -158,7 +164,31 @@ class MainActivity: FlutterActivity() {
 
     private fun showEmergencyNotification(title: String, body: String) {
         try {
+            // 1. Wake screen up immediately if device is asleep
+            try {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+                val wakeLock = powerManager?.newWakeLock(
+                    android.os.PowerManager.FULL_WAKE_LOCK or android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP or android.os.PowerManager.ON_AFTER_RELEASE,
+                    "SafeCommute:ActivityEmergencyWakeLock"
+                )
+                wakeLock?.acquire(15000)
+            } catch (_: Exception) {}
+
             triggerHeavyVibration()
+
+            // 2. If ResponderAlertService is running, trigger its looping sound as well
+            if (ResponderAlertService.isRunning) {
+                val serviceIntent = Intent(this, ResponderAlertService::class.java).apply {
+                    action = ResponderAlertService.ACTION_TRIGGER_EMERGENCY
+                    putExtra("title", title)
+                    putExtra("body", body)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(serviceIntent)
+                } else {
+                    startService(serviceIntent)
+                }
+            }
 
             val channelId = "safecommute_emergency_channel"
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
@@ -184,6 +214,7 @@ class MainActivity: FlutterActivity() {
 
             val launchIntent = Intent(this, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra("open_responder_map", true)
             }
             val pendingIntent = PendingIntent.getActivity(
                 this,
@@ -208,10 +239,12 @@ class MainActivity: FlutterActivity() {
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
                 builder.setStyle(Notification.BigTextStyle().bigText(body))
+                builder.addAction(Notification.Action.Builder(null, "VIEW LIVE RADAR", pendingIntent).build())
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 builder.setCategory(Notification.CATEGORY_ALARM)
                 builder.setVisibility(Notification.VISIBILITY_PUBLIC)
+                builder.setFullScreenIntent(pendingIntent, false)
             }
 
             notificationManager.notify(911, builder.build())

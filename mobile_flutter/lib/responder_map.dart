@@ -34,57 +34,17 @@ class VictimAlert {
   });
 }
 
-class PoliceBranch {
-  final String name;
-  final String jurisdiction;
-  final double lat;
-  final double lng;
-  final String phone;
-
-  const PoliceBranch({
-    required this.name,
-    required this.jurisdiction,
-    required this.lat,
-    required this.lng,
-    required this.phone,
-  });
-}
-
-List<PoliceBranch> getLocalPoliceStations(double centerLat, double centerLng) {
-  return [
-    PoliceBranch(
-      name: "Central Police Headquarters (HQ)",
-      jurisdiction: "Metropolitan Central Command Division",
-      lat: centerLat + 0.0072,
-      lng: centerLng + 0.0051,
-      phone: "112",
-    ),
-    PoliceBranch(
-      name: "Municipal Police Station Branch #4",
-      jurisdiction: "Regional Division Station",
-      lat: centerLat - 0.0062,
-      lng: centerLng + 0.0068,
-      phone: "100",
-    ),
-    PoliceBranch(
-      name: "Rapid Patrol PCR Van #12",
-      jurisdiction: "Mobile Law Enforcement Unit",
-      lat: centerLat + 0.0038,
-      lng: centerLng - 0.0055,
-      phone: "112",
-    ),
-  ];
-}
-
 class ResponderMapScreen extends StatefulWidget {
   final String? initialVictimUsername;
   final VoidCallback? onTriggerSos;
   final VoidCallback? onSwitchToCommuter;
+  final bool isVisible;
   const ResponderMapScreen({
     super.key,
     this.initialVictimUsername,
     this.onTriggerSos,
     this.onSwitchToCommuter,
+    this.isVisible = true,
   });
 
   @override
@@ -266,6 +226,30 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
     }
   }
 
+  @override
+  void didUpdateWidget(covariant ResponderMapScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isVisible != oldWidget.isVisible) {
+      if (widget.isVisible) {
+        _resumeLocationTracking();
+      } else {
+        _pauseLocationTracking();
+      }
+    }
+  }
+
+  void _pauseLocationTracking() {
+    _positionStream?.pause();
+  }
+
+  void _resumeLocationTracking() {
+    if (_positionStream != null) {
+      _positionStream?.resume();
+    } else {
+      _startLocationTracking();
+    }
+  }
+
   Future<void> _startLocationTracking() async {
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
@@ -273,25 +257,23 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
     }
 
     if (permission == LocationPermission.whileInUse || permission == LocationPermission.always) {
+      // Fast instant fix from cache (0ms)
       try {
-        Position pos = await Geolocator.getCurrentPosition(
-          locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
-        );
-        if (mounted) {
+        Position? fastPos = await Geolocator.getLastKnownPosition();
+        if (fastPos != null && mounted) {
           setState(() {
-            _myPosition = pos;
+            _myPosition = fastPos;
             if (_activeAlerts.isEmpty) {
-              _mapCenter = LatLng(pos.latitude, pos.longitude);
-              try {
-                _mapController.move(_mapCenter, 15.0);
-              } catch (_) {}
+              _mapCenter = LatLng(fastPos.latitude, fastPos.longitude);
             }
           });
         }
       } catch (_) {}
 
+      // High accuracy stream throttled to 10m to prevent CPU lag
+      _positionStream?.cancel();
       _positionStream = Geolocator.getPositionStream(
-        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 3),
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 10),
       ).listen((Position pos) {
         if (mounted) {
           setState(() {
@@ -299,6 +281,10 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
           });
         }
       });
+
+      if (!widget.isVisible) {
+        _positionStream?.pause();
+      }
     }
   }
 
@@ -409,12 +395,20 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
     final prefs = await SharedPreferences.getInstance();
     double radiusKm = prefs.getDouble('alertRadiusKm') ?? 5.0; // Default 5 km
 
+    Position? pos = _myPosition;
+    if (pos == null) {
+      try {
+        pos = await Geolocator.getLastKnownPosition();
+        if (pos != null) _myPosition = pos;
+      } catch (_) {}
+    }
+
     double distanceMeters = 0.0;
     bool isNearby = true;
-    if (_myPosition != null) {
+    if (pos != null) {
       distanceMeters = Geolocator.distanceBetween(
-        _myPosition!.latitude,
-        _myPosition!.longitude,
+        pos.latitude,
+        pos.longitude,
         lat,
         lng,
       );
@@ -441,20 +435,27 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
       return;
     }
 
+    final distDesc = pos != null
+        ? (distanceMeters < 1000 ? "${distanceMeters.round()} m away" : "${(distanceMeters / 1000).toStringAsFixed(1)} km away")
+        : "nearby";
+
     // 1. Native Android Heads-Up Notification & Heavy Vibration for Nearest Responders
     try {
       await _volumeChannel.invokeMethod('showEmergencyNotification', {
-        'title': "🚨 NEAREST SOS ALERT: $username",
-        'body': "$username needs help nearby (${(distanceMeters / 1000).toStringAsFixed(1)} km)! Live GPS coordinates receiving.",
+        'title': "🚨 SOS ALERT: $username NEEDS HELP!",
+        'body': "$username is in danger ($distDesc)! Tap to view Live GPS Radar.",
       });
     } catch (_) {}
 
-    // 2. Play Urgent Audio Siren Loop
-    try {
-      await _alertPlayer.setReleaseMode(ReleaseMode.loop);
-      await _alertPlayer.play(AssetSource('siren.ogg'));
-      if (mounted) setState(() => _isAlarmPlaying = true);
-    } catch (_) {}
+    // 2. Play Urgent Audio Siren Loop (check sirenEnabled setting)
+    bool sirenEnabled = prefs.getBool('sirenEnabled') ?? true;
+    if (sirenEnabled) {
+      try {
+        await _alertPlayer.setReleaseMode(ReleaseMode.loop);
+        await _alertPlayer.play(AssetSource('siren.ogg'));
+        if (mounted) setState(() => _isAlarmPlaying = true);
+      } catch (_) {}
+    }
 
     // 3. Heavy In-App Haptics
     HapticFeedback.heavyImpact();
@@ -881,34 +882,7 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
       );
     }
 
-    // 4. Police Authority HQ & Regional Precinct Markers
-    double refLat = _myPosition?.latitude ?? _mapCenter.latitude;
-    double refLng = _myPosition?.longitude ?? _mapCenter.longitude;
-    final policeStations = getLocalPoliceStations(refLat, refLng);
 
-    for (var station in policeStations) {
-      markers.add(
-        Marker(
-          point: LatLng(station.lat, station.lng),
-          width: 44,
-          height: 44,
-          child: GestureDetector(
-            onTap: () => _showPoliceStationDetails(station),
-            child: Container(
-              decoration: BoxDecoration(
-                color: Colors.blue.shade900,
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.white, width: 2.5),
-                boxShadow: const [
-                  BoxShadow(color: Colors.black38, blurRadius: 6, offset: Offset(0, 2)),
-                ],
-              ),
-              child: const Icon(Icons.local_police, color: Colors.white, size: 22),
-            ),
-          ),
-        ),
-      );
-    }
 
     return Scaffold(
       appBar: AppBar(
@@ -1427,116 +1401,7 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
     );
   }
 
-  void _showPoliceStationDetails(PoliceBranch station) {
-    double? distMeters;
-    if (_myPosition != null) {
-      distMeters = Geolocator.distanceBetween(
-        _myPosition!.latitude,
-        _myPosition!.longitude,
-        station.lat,
-        station.lng,
-      );
-    }
-    String distText = distMeters != null
-        ? (distMeters < 1000 ? "${distMeters.round()} m away" : "${(distMeters / 1000).toStringAsFixed(1)} km away")
-        : "Calculating distance...";
 
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (ctx) => Padding(
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: Colors.blue.shade50,
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(Icons.local_police, color: Colors.blueAccent, size: 28),
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        station.name,
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.black87),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        station.jurisdiction,
-                        style: const TextStyle(fontSize: 12, color: Colors.black54),
-                      ),
-                    ],
-                  ),
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.green.shade50,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.green.shade300),
-                  ),
-                  child: const Text("OFFICIAL HQ", style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 11)),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.blue.shade50.withValues(alpha: 0.6),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.blue.shade100),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.verified, color: Colors.blueAccent, size: 20),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      "SafeCommute Central Police HQ Tie-Up: Nearest Station ($distText). Top-to-bottom dispatch automated.",
-                      style: const TextStyle(fontSize: 12, color: Colors.black87, fontWeight: FontWeight.w500),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blueAccent,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                ),
-                icon: const Icon(Icons.phone),
-                label: Text("Call Precinct Dispatch (${station.phone})", style: const TextStyle(fontWeight: FontWeight.bold)),
-                onPressed: () async {
-                  final uri = Uri.parse("tel:${station.phone}");
-                  if (await canLaunchUrl(uri)) {
-                    await launchUrl(uri);
-                  }
-                },
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 
   Widget _buildFloatingToolButton({
     required IconData icon,

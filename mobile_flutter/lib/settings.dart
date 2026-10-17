@@ -601,78 +601,7 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
               ),
             ),
 
-            const SizedBox(height: 25),
-            const Text("Police Authority Integration", style: TextStyle(color: Colors.redAccent, fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 10),
-            Card(
-              color: Colors.white,
-              elevation: 2,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: Colors.blue.shade50,
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Icon(Icons.local_police, color: Colors.blueAccent, size: 28),
-                        ),
-                        const SizedBox(width: 12),
-                        const Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                "Central Police HQ Enterprise Tie-Up",
-                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.black87),
-                              ),
-                              SizedBox(height: 2),
-                              Text(
-                                "Top-to-Bottom Regional Command Cascade",
-                                style: TextStyle(fontSize: 12, color: Colors.green, fontWeight: FontWeight.bold),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: Colors.green.shade50,
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: Colors.green.shade300),
-                          ),
-                          child: const Text("ACTIVE", style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 11)),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    const Text(
-                      "SafeCommute has a direct enterprise integration with Central Police Headquarters. When you trigger an SOS, the main command center logs the ticket and instantly routes it to the nearest local municipal branch and patrol PCR vans automatically.",
-                      style: TextStyle(color: Colors.black87, fontSize: 12, height: 1.4),
-                    ),
-                    const Divider(height: 20),
-                    const Row(
-                      children: [
-                        Icon(Icons.check_circle_outline, color: Colors.blueAccent, size: 16),
-                        SizedBox(width: 6),
-                        Expanded(
-                          child: Text(
-                            "Top-to-Bottom Dispatch: Central HQ ➡️ Local Station ➡️ PCR Van",
-                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.black87),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
+
             
             const SizedBox(height: 25),
             const Text("Hardware Wearable (Bluetooth)", style: TextStyle(color: Colors.redAccent, fontSize: 18, fontWeight: FontWeight.bold)),
