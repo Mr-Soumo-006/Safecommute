@@ -12,9 +12,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:sensors_plus/sensors_plus.dart';
-import 'role_screen.dart';
 import 'main.dart';
-import 'settings.dart';
 
 enum MapLayerStyle { humanitarianOsm, standardOsm, roadDetailOsm }
 
@@ -143,9 +141,6 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
     HapticFeedback.heavyImpact();
     _muteAlarm();
 
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('userRole', 'commuter');
-
     if (widget.onTriggerSos != null) {
       widget.onTriggerSos!();
       return;
@@ -162,8 +157,6 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
 
   Future<void> _switchToCommuter() async {
     _muteAlarm();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('userRole', 'commuter');
 
     if (widget.onSwitchToCommuter != null) {
       widget.onSwitchToCommuter!();
@@ -939,49 +932,6 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
             icon: const Icon(Icons.layers, color: Colors.white),
             tooltip: "Switch Map Layer",
             onPressed: _cycleMapLayer,
-          ),
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert, color: Colors.white),
-            tooltip: "More Options",
-            onSelected: (val) async {
-              if (val == 'settings') {
-                Navigator.push(context, MaterialPageRoute(builder: (context) => const SettingsScreen()));
-              } else if (val == 'logout') {
-                try {
-                  await _volumeChannel.invokeMethod('stopResponderBackgroundService');
-                } catch (_) {}
-                final prefs = await SharedPreferences.getInstance();
-                await prefs.remove('userRole');
-                if (!context.mounted) return;
-                Navigator.pushAndRemoveUntil(
-                  context,
-                  MaterialPageRoute(builder: (context) => const RoleSelectionScreen()),
-                  (route) => false,
-                );
-              }
-            },
-            itemBuilder: (context) => [
-              const PopupMenuItem(
-                value: 'settings',
-                child: Row(
-                  children: [
-                    Icon(Icons.settings, color: Colors.black87, size: 20),
-                    SizedBox(width: 10),
-                    Text("Emergency Settings"),
-                  ],
-                ),
-              ),
-              const PopupMenuItem(
-                value: 'logout',
-                child: Row(
-                  children: [
-                    Icon(Icons.logout, color: Colors.redAccent, size: 20),
-                    SizedBox(width: 10),
-                    Text("Log Out / Reset Role"),
-                  ],
-                ),
-              ),
-            ],
           ),
         ],
       ),

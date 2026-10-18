@@ -37,47 +37,7 @@ class SafeCommuteApp extends StatelessWidget {
           titleTextStyle: TextStyle(color: Colors.black87, fontSize: 20, fontWeight: FontWeight.bold),
         ),
       ),
-      home: const RoleCheckScreen(), 
-    );
-  }
-}
-
-class RoleCheckScreen extends StatefulWidget {
-  const RoleCheckScreen({super.key});
-
-  @override
-  State<RoleCheckScreen> createState() => _RoleCheckScreenState();
-}
-
-class _RoleCheckScreenState extends State<RoleCheckScreen> {
-  @override
-  void initState() {
-    super.initState();
-    _checkSavedRole();
-  }
-
-  Future<void> _checkSavedRole() async {
-    final prefs = await SharedPreferences.getInstance();
-    final role = prefs.getString('userRole');
-    if (!mounted) return;
-
-    int initialTab = 0;
-    if (role == 'responder') {
-      initialTab = 1;
-    }
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (context) => UnifiedSafetyScreen(initialTabIndex: initialTab)),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return const Scaffold(
-      backgroundColor: Color(0xFFF5F5F5),
-      body: Center(
-        child: CircularProgressIndicator(color: Colors.redAccent),
-      ),
+      home: const UnifiedSafetyScreen(), 
     );
   }
 }
@@ -455,9 +415,6 @@ class DashboardScreenState extends State<DashboardScreen> {
       await _stopActiveDefense();
       setState(() => isSosActive = false);
     }
-
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('userRole', 'responder');
 
     if (widget.onNavigateToMap != null) {
       widget.onNavigateToMap!(targetVictim);
