@@ -77,6 +77,9 @@ class _UnifiedSafetyScreenState extends State<UnifiedSafetyScreen> {
         setState(() {
           _currentTab = 1;
         });
+      } else if (call.method == "onAlarmMutedExternally") {
+        _responderMapKey.currentState?.muteAlarmFromExternal();
+        _dashboardKey.currentState?.dismissIncomingDistressFromExternal();
       }
     });
   }
@@ -366,12 +369,26 @@ class DashboardScreenState extends State<DashboardScreen> {
         String cancelledUser = payload['username']?.toString() ?? "";
         if (_incomingDistressAlert != null &&
             (_incomingDistressAlert!['username'] == cancelledUser || cancelledUser.isEmpty)) {
-          setState(() {
-            _incomingDistressAlert = null;
-          });
+          _dismissIncomingDistressAlert();
         }
       }
     });
+  }
+
+  void dismissIncomingDistressFromExternal() {
+    if (mounted) {
+      setState(() => _incomingDistressAlert = null);
+    }
+  }
+
+  void _dismissIncomingDistressAlert() {
+    setState(() => _incomingDistressAlert = null);
+    try {
+      _volumeChannel.invokeMethod('cancelEmergencyNotification');
+    } catch (_) {}
+    try {
+      _volumeChannel.invokeMethod('muteEmergencyAlarm');
+    } catch (_) {}
   }
 
   void triggerSosFromExternal() {
@@ -694,6 +711,7 @@ class DashboardScreenState extends State<DashboardScreen> {
                       ),
                       onPressed: () {
                         final victim = _incomingDistressAlert!['username']?.toString();
+                        _dismissIncomingDistressAlert();
                         _switchToResponder(targetVictim: victim);
                       },
                       child: const Text(
@@ -703,7 +721,7 @@ class DashboardScreenState extends State<DashboardScreen> {
                     ),
                     const SizedBox(width: 4),
                     GestureDetector(
-                      onTap: () => setState(() => _incomingDistressAlert = null),
+                      onTap: _dismissIncomingDistressAlert,
                       child: const Icon(Icons.close, color: Colors.white70, size: 18),
                     ),
                   ],

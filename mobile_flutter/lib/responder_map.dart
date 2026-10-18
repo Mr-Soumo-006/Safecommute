@@ -464,12 +464,21 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
     }
   }
 
+  void muteAlarmFromExternal() {
+    _muteAlarm();
+  }
+
   void _muteAlarm() async {
     try {
       await _alertPlayer.stop();
-      await _volumeChannel.invokeMethod('cancelEmergencyNotification');
-      if (mounted) setState(() => _isAlarmPlaying = false);
     } catch (_) {}
+    try {
+      await _volumeChannel.invokeMethod('cancelEmergencyNotification');
+    } catch (_) {}
+    try {
+      await _volumeChannel.invokeMethod('muteEmergencyAlarm');
+    } catch (_) {}
+    if (mounted) setState(() => _isAlarmPlaying = false);
   }
 
   void _showEmergencyModal(String username, double lat, double lng) {

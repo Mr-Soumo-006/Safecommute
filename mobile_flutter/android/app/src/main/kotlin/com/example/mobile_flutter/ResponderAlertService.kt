@@ -88,6 +88,10 @@ class ResponderAlertService : Service() {
                     val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                     manager.cancel(EMERGENCY_NOTIFICATION_ID)
                 } catch (_: Exception) {}
+                MainActivity.notifyAlarmMutedExternally()
+                if (!isRunning) {
+                    stopSelf()
+                }
             }
         }
 
@@ -208,11 +212,12 @@ class ResponderAlertService : Service() {
             .setContentText(body)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
+            .setDeleteIntent(mutePendingIntent)
             .setPriority(Notification.PRIORITY_MAX)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
             builder.setStyle(Notification.BigTextStyle().bigText(body))
-            builder.addAction(Notification.Action.Builder(null, "MUTE ALARM", mutePendingIntent).build())
+            builder.addAction(Notification.Action.Builder(null, "TURN OFF ALARM", mutePendingIntent).build())
             builder.addAction(Notification.Action.Builder(null, "VIEW LIVE MAP", pendingIntent).build())
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -268,9 +273,24 @@ class ResponderAlertService : Service() {
             if (mediaPlayer?.isPlaying == true) {
                 mediaPlayer?.stop()
             }
+            mediaPlayer?.reset()
             mediaPlayer?.release()
             mediaPlayer = null
             isAlarmPlaying = false
+        } catch (_: Exception) {}
+        stopVibration()
+    }
+
+    private fun stopVibration() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                vibratorManager?.defaultVibrator?.cancel()
+            } else {
+                @Suppress("DEPRECATION")
+                val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+                vibrator?.cancel()
+            }
         } catch (_: Exception) {}
     }
 
