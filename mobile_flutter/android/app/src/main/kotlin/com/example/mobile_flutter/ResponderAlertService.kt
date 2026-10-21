@@ -31,6 +31,7 @@ class ResponderAlertService : Service() {
 
     companion object {
         var isRunning = false
+        val silencedVictims = java.util.Collections.synchronizedSet(HashSet<String>())
         const val ACTION_START_MONITOR = "ACTION_START_MONITOR"
         const val ACTION_STOP_MONITOR = "ACTION_STOP_MONITOR"
         const val ACTION_TRIGGER_EMERGENCY = "ACTION_TRIGGER_EMERGENCY"
@@ -78,11 +79,19 @@ class ResponderAlertService : Service() {
                 stopSelf()
             }
             ACTION_TRIGGER_EMERGENCY -> {
+                val victimId = intent?.getStringExtra("victimId") ?: ""
+                if (victimId.isNotEmpty() && silencedVictims.contains(victimId)) {
+                    return START_STICKY
+                }
                 val title = intent?.getStringExtra("title") ?: "🚨 CRITICAL SOS ALERT!"
                 val body = intent?.getStringExtra("body") ?: "A commuter triggered an emergency SOS!"
                 triggerEmergencyAlarm(title, body)
             }
             ACTION_MUTE_ALARM -> {
+                val victimId = intent?.getStringExtra("victimId") ?: ""
+                if (victimId.isNotEmpty()) {
+                    silencedVictims.add(victimId)
+                }
                 stopAlarm()
                 try {
                     val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager

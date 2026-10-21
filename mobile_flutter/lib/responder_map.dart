@@ -71,6 +71,8 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
   final AudioPlayer _alertPlayer = AudioPlayer();
   bool _isAlarmPlaying = false;
   bool _backgroundMonitoringEnabled = true;
+  final Set<String> _silencedVictims = {};
+  bool _isAlertsSilenced = false;
 
   StreamSubscription<AccelerometerEvent>? _shakeSubscription;
   final List<DateTime> _volumePressTimestamps = [];
@@ -323,9 +325,10 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
         double lng = (payload['lng'] as num).toDouble();
         String username = payload['username'] ?? "Commuter in Distress";
         String battery = payload['batteryMetadata']?.toString() ?? "??";
+        bool isLiveUpdate = payload['isLiveUpdate'] == true;
 
         LatLng victimPos = LatLng(lat, lng);
-        bool isNewAlert = !_activeAlerts.containsKey(username);
+        bool isBrandNewAlert = !_activeAlerts.containsKey(username);
 
         setState(() {
           _activeAlerts[username] = VictimAlert(
@@ -339,8 +342,9 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
           _statusText = "🚨 ${_activeAlerts.length} Active Emergency";
         });
 
-        // Trigger strong notification, siren, and heads-up banner on new alert!
-        if (isNewAlert) {
+        // Trigger notification & loud siren ONLY on initial alert,
+        // and ONLY if not silenced by the user, and NEVER on continuous 4s live streaming updates!
+        if (isBrandNewAlert && !isLiveUpdate && !_silencedVictims.contains(username) && !_isAlertsSilenced) {
           _handleNewEmergencyAlert(username, lat, lng);
         }
 
@@ -356,12 +360,18 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
     socket.on('alert_cancelled', (payload) {
       String username = payload['username'] ?? "";
       if (mounted) {
+        _silencedVictims.remove(username);
+        try {
+          _volumeChannel.invokeMethod('unmuteEmergencyAlarm', {'victimId': username});
+        } catch (_) {}
+
         setState(() {
           _activeAlerts.remove(username);
           if (_selectedVictimUsername == username) {
             _selectedVictimUsername = _activeAlerts.isNotEmpty ? _activeAlerts.keys.first : null;
           }
           if (_activeAlerts.isEmpty) {
+            _isAlertsSilenced = false;
             _statusText = "Connected & Monitoring";
             _muteAlarm();
             try {
@@ -437,6 +447,7 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
       await _volumeChannel.invokeMethod('showEmergencyNotification', {
         'title': "🚨 SOS ALERT: $username NEEDS HELP!",
         'body': "$username is in danger ($distDesc)! Tap to view Live GPS Radar.",
+        'victimId': username,
       });
     } catch (_) {}
 
@@ -468,23 +479,45 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
     _muteAlarm();
   }
 
-  void _muteAlarm() async {
+  void _muteAlarm({String? victimUsername}) async {
+    if (victimUsername != null && victimUsername.isNotEmpty) {
+      _silencedVictims.add(victimUsername);
+    } else {
+      _silencedVictims.addAll(_activeAlerts.keys);
+      _isAlertsSilenced = true;
+    }
+
     try {
       await _alertPlayer.stop();
     } catch (_) {}
     try {
-      await _volumeChannel.invokeMethod('cancelEmergencyNotification');
+      await _volumeChannel.invokeMethod('cancelEmergencyNotification', {
+        'victimId': victimUsername ?? '',
+      });
     } catch (_) {}
     try {
-      await _volumeChannel.invokeMethod('muteEmergencyAlarm');
+      await _volumeChannel.invokeMethod('muteEmergencyAlarm', {
+        'victimId': victimUsername ?? '',
+      });
     } catch (_) {}
     if (mounted) setState(() => _isAlarmPlaying = false);
+  }
+
+  void _unmuteAlarm(String victimUsername) async {
+    _silencedVictims.remove(victimUsername);
+    _isAlertsSilenced = false;
+    try {
+      await _volumeChannel.invokeMethod('unmuteEmergencyAlarm', {
+        'victimId': victimUsername,
+      });
+    } catch (_) {}
+    if (mounted) setState(() {});
   }
 
   void _showEmergencyModal(String username, double lat, double lng) {
     showDialog(
       context: context,
-      barrierDismissible: false,
+      barrierDismissible: true,
       builder: (ctx) {
         return AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
@@ -546,7 +579,7 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
                   ),
                   onPressed: () {
                     Navigator.pop(ctx);
-                    _muteAlarm();
+                    _muteAlarm(victimUsername: username);
                     _startTurnByTurnNavigation(lat, lng);
                   },
                 ),
@@ -558,12 +591,15 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
                     child: OutlinedButton.icon(
                       style: OutlinedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 10),
+                        foregroundColor: Colors.red.shade900,
+                        side: BorderSide(color: Colors.red.shade300),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       ),
                       icon: const Icon(Icons.volume_off, size: 18),
-                      label: const Text("Mute Siren", style: TextStyle(fontWeight: FontWeight.bold)),
+                      label: const Text("OFF Alert", style: TextStyle(fontWeight: FontWeight.bold)),
                       onPressed: () {
-                        _muteAlarm();
+                        Navigator.pop(ctx);
+                        _muteAlarm(victimUsername: username);
                       },
                     ),
                   ),
@@ -577,9 +613,10 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       ),
                       icon: const Icon(Icons.map, size: 18),
-                      label: const Text("View Map", style: TextStyle(fontWeight: FontWeight.bold)),
+                      label: const Text("Search in Peace", style: TextStyle(fontWeight: FontWeight.bold)),
                       onPressed: () {
                         Navigator.pop(ctx);
+                        _muteAlarm(victimUsername: username);
                       },
                     ),
                   ),
@@ -589,7 +626,10 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
           ),
         );
       },
-    );
+    ).then((_) {
+      // Always silence alarm when user dismisses modal by any method (back or tap outside)
+      _muteAlarm(victimUsername: username);
+    });
   }
 
   void _startTurnByTurnNavigation(double lat, double lng) async {
@@ -1022,7 +1062,7 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
               ),
             ),
 
-          // Active Siren Mute Bar
+          // Active Siren Mute Bar or Peace Mode Status
           if (_isAlarmPlaying)
             Positioned(
               top: _activeAlerts.length > 1 ? 60 : 14,
@@ -1056,10 +1096,55 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       ),
                       icon: const Icon(Icons.volume_off, size: 15),
-                      label: const Text("TURN OFF ALARM", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11)),
-                      onPressed: _muteAlarm,
+                      label: const Text("OFF ALERT & SEARCH", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11)),
+                      onPressed: () => _muteAlarm(),
                     ),
                   ],
+                ),
+              ),
+            )
+          else if (_isAlertsSilenced && _activeAlerts.isNotEmpty)
+            Positioned(
+              top: _activeAlerts.length > 1 ? 60 : 14,
+              left: 20,
+              right: 20,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.black87,
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4)],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.volume_off, color: Colors.greenAccent, size: 16),
+                      const SizedBox(width: 8),
+                      Text(
+                        "Alerts Off • Searching ${_activeAlerts.length} Incident in Peace",
+                        style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(width: 8),
+                      GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            _isAlertsSilenced = false;
+                            _silencedVictims.clear();
+                          });
+                        },
+                        child: const Text(
+                          "UNMUTE",
+                          style: TextStyle(
+                            color: Colors.greenAccent,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            decoration: TextDecoration.underline,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -1231,6 +1316,58 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
                                         currentVictim.username,
                                         style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.black87),
                                         overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 6),
+                                    InkWell(
+                                      onTap: () {
+                                        if (_silencedVictims.contains(currentVictim.username)) {
+                                          _unmuteAlarm(currentVictim.username);
+                                        } else {
+                                          _muteAlarm(victimUsername: currentVictim.username);
+                                        }
+                                      },
+                                      borderRadius: BorderRadius.circular(6),
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: _silencedVictims.contains(currentVictim.username)
+                                              ? Colors.grey.shade100
+                                              : Colors.red.shade50,
+                                          borderRadius: BorderRadius.circular(6),
+                                          border: Border.all(
+                                            color: _silencedVictims.contains(currentVictim.username)
+                                                ? Colors.grey.shade400
+                                                : Colors.red.shade300,
+                                          ),
+                                        ),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Icon(
+                                              _silencedVictims.contains(currentVictim.username)
+                                                  ? Icons.volume_off
+                                                  : Icons.volume_up,
+                                              size: 13,
+                                              color: _silencedVictims.contains(currentVictim.username)
+                                                  ? Colors.grey.shade700
+                                                  : Colors.redAccent,
+                                            ),
+                                            const SizedBox(width: 3),
+                                            Text(
+                                              _silencedVictims.contains(currentVictim.username)
+                                                  ? "Alert Off"
+                                                  : "OFF Alert",
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.bold,
+                                                color: _silencedVictims.contains(currentVictim.username)
+                                                    ? Colors.grey.shade700
+                                                    : Colors.redAccent,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
                                       ),
                                     ),
                                     const SizedBox(width: 6),

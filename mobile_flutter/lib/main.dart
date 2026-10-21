@@ -190,6 +190,7 @@ class DashboardScreenState extends State<DashboardScreen> {
   static const MethodChannel _smsChannel = MethodChannel('com.safecommute.app/sms');
   static const MethodChannel _volumeChannel = MethodChannel('com.safecommute.app/volume');
   final List<DateTime> _volumePressTimestamps = [];
+  final Set<String> _silencedVictims = {};
 
   @override
   void initState() {
@@ -317,7 +318,15 @@ class DashboardScreenState extends State<DashboardScreen> {
             ? payload
             : Map<String, dynamic>.from(payload as Map);
 
-        // Proximity Geofenced Check (Instant non-blocking):
+        final String victimName = alertData['username']?.toString() ?? "Someone";
+        final bool isLiveUpdate = alertData['isLiveUpdate'] == true;
+
+        // 1. If the user already cancelled/silenced this alert, NEVER re-trigger it!
+        if (_silencedVictims.contains(victimName)) {
+          return;
+        }
+
+        // 2. Proximity Geofenced Check (Instant non-blocking):
         if (alertData['lat'] != null && alertData['lng'] != null) {
           try {
             Position? currentPos = await Geolocator.getLastKnownPosition();
@@ -334,7 +343,7 @@ class DashboardScreenState extends State<DashboardScreen> {
             double radiusKm = p.getDouble('alertRadiusKm') ?? 5.0;
 
             if (distM != null && radiusKm > 0.0 && distM > (radiusKm * 1000.0)) {
-              debugPrint("[PROXIMITY FILTER] Distant incident from ${alertData['username']} is ${(distM/1000).toStringAsFixed(1)} km away. Alert banner silenced.");
+              debugPrint("[PROXIMITY FILTER] Distant incident from $victimName is ${(distM/1000).toStringAsFixed(1)} km away. Alert banner silenced.");
               return;
             }
             if (distM != null) {
@@ -347,18 +356,34 @@ class DashboardScreenState extends State<DashboardScreen> {
           } catch (_) {}
         }
 
+        // 3. If continuous live GPS streaming update:
+        if (isLiveUpdate) {
+          // Update coordinates quietly on banner if already open, but NEVER re-ring notifications:
+          if (_incomingDistressAlert != null && _incomingDistressAlert!['username'] == victimName) {
+            setState(() {
+              _incomingDistressAlert = alertData;
+            });
+          }
+          return;
+        }
+
+        // 4. If already showing distress banner for this victim, do not re-alert:
+        if (_incomingDistressAlert != null && _incomingDistressAlert!['username'] == victimName) {
+          return;
+        }
+
         setState(() {
           _incomingDistressAlert = alertData;
         });
         HapticFeedback.heavyImpact();
 
-        // Also trigger native heads-up notification so responder receives strong alert on any tab
+        // 5. Trigger native heads-up notification ONCE for the new emergency
         try {
-          String victimName = alertData['username'] ?? "Someone";
           String dist = alertData['distanceText'] ?? "Nearby";
           await _volumeChannel.invokeMethod('showEmergencyNotification', {
             'title': "🚨 SOS ALERT: $victimName NEEDS HELP!",
             'body': "$victimName is in danger ($dist)! Tap to view Live GPS Radar.",
+            'victimId': victimName,
           });
         } catch (_) {}
       }
@@ -367,6 +392,12 @@ class DashboardScreenState extends State<DashboardScreen> {
     socket.on('alert_cancelled', (payload) {
       if (mounted) {
         String cancelledUser = payload['username']?.toString() ?? "";
+        _silencedVictims.remove(cancelledUser);
+        try {
+          _volumeChannel.invokeMethod('unmuteEmergencyAlarm', {
+            'victimId': cancelledUser,
+          });
+        } catch (_) {}
         if (_incomingDistressAlert != null &&
             (_incomingDistressAlert!['username'] == cancelledUser || cancelledUser.isEmpty)) {
           _dismissIncomingDistressAlert();
@@ -377,17 +408,31 @@ class DashboardScreenState extends State<DashboardScreen> {
 
   void dismissIncomingDistressFromExternal() {
     if (mounted) {
+      if (_incomingDistressAlert != null) {
+        String? victim = _incomingDistressAlert!['username']?.toString();
+        if (victim != null && victim.isNotEmpty) {
+          _silencedVictims.add(victim);
+        }
+      }
       setState(() => _incomingDistressAlert = null);
     }
   }
 
   void _dismissIncomingDistressAlert() {
+    String? victim = _incomingDistressAlert?['username']?.toString();
+    if (victim != null && victim.isNotEmpty) {
+      _silencedVictims.add(victim);
+    }
     setState(() => _incomingDistressAlert = null);
     try {
-      _volumeChannel.invokeMethod('cancelEmergencyNotification');
+      _volumeChannel.invokeMethod('cancelEmergencyNotification', {
+        'victimId': victim ?? '',
+      });
     } catch (_) {}
     try {
-      _volumeChannel.invokeMethod('muteEmergencyAlarm');
+      _volumeChannel.invokeMethod('muteEmergencyAlarm', {
+        'victimId': victim ?? '',
+      });
     } catch (_) {}
   }
 

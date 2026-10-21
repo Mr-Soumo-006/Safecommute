@@ -26,6 +26,8 @@ class MainActivity: FlutterActivity() {
     private val SMS_CHANNEL = "com.safecommute.app/sms"
     private val VOLUME_CHANNEL = "com.safecommute.app/volume"
     internal var volumeChannel: MethodChannel? = null
+    private val silencedVictimIds = java.util.Collections.synchronizedSet(HashSet<String>())
+    private var activeEmergencyVictim: String? = null
 
     companion object {
         var instance: MainActivity? = null
@@ -142,11 +144,22 @@ class MainActivity: FlutterActivity() {
                 "showEmergencyNotification" -> {
                     val title = call.argument<String>("title") ?: "🚨 EMERGENCY SOS ALERT"
                     val body = call.argument<String>("body") ?: "A commuter needs immediate help!"
-                    showEmergencyNotification(title, body)
+                    val victimId = call.argument<String>("victimId")
+                    showEmergencyNotification(title, body, victimId)
                     result.success(true)
                 }
                 "cancelEmergencyNotification", "muteEmergencyAlarm" -> {
-                    cancelEmergencyNotification()
+                    val victimId = call.argument<String>("victimId")
+                    cancelEmergencyNotification(victimId)
+                    result.success(true)
+                }
+                "unmuteEmergencyAlarm" -> {
+                    val victimId = call.argument<String>("victimId")
+                    if (!victimId.isNullOrEmpty()) {
+                        silencedVictimIds.remove(victimId)
+                    } else {
+                        silencedVictimIds.clear()
+                    }
                     result.success(true)
                 }
                 "triggerHeavyVibration" -> {
@@ -169,7 +182,13 @@ class MainActivity: FlutterActivity() {
         }
     }
 
-    private fun showEmergencyNotification(title: String, body: String) {
+    private fun showEmergencyNotification(title: String, body: String, victimId: String? = null) {
+        if (!victimId.isNullOrEmpty() && silencedVictimIds.contains(victimId)) {
+            return
+        }
+        if (!victimId.isNullOrEmpty()) {
+            activeEmergencyVictim = victimId
+        }
         try {
             // 1. Wake screen up immediately if device is asleep
             try {
@@ -189,6 +208,7 @@ class MainActivity: FlutterActivity() {
                     action = ResponderAlertService.ACTION_TRIGGER_EMERGENCY
                     putExtra("title", title)
                     putExtra("body", body)
+                    putExtra("victimId", victimId)
                 }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     startForegroundService(serviceIntent)
@@ -232,6 +252,7 @@ class MainActivity: FlutterActivity() {
 
             val muteIntent = Intent(this, ResponderAlertService::class.java).apply {
                 action = ResponderAlertService.ACTION_MUTE_ALARM
+                putExtra("victimId", victimId)
             }
             val mutePendingIntent = PendingIntent.getService(
                 this,
@@ -270,7 +291,11 @@ class MainActivity: FlutterActivity() {
         } catch (_: Exception) {}
     }
 
-    private fun cancelEmergencyNotification() {
+    private fun cancelEmergencyNotification(victimId: String? = null) {
+        val targetVictim = if (!victimId.isNullOrEmpty()) victimId else activeEmergencyVictim
+        if (!targetVictim.isNullOrEmpty()) {
+            silencedVictimIds.add(targetVictim)
+        }
         try {
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
             notificationManager?.cancel(911)
@@ -279,6 +304,7 @@ class MainActivity: FlutterActivity() {
         try {
             val muteIntent = Intent(this, ResponderAlertService::class.java).apply {
                 action = ResponderAlertService.ACTION_MUTE_ALARM
+                putExtra("victimId", targetVictim)
             }
             startService(muteIntent)
         } catch (_: Exception) {}
