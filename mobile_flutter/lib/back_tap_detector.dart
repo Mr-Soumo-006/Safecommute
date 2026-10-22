@@ -7,7 +7,7 @@ class BackTapDetector {
   StreamSubscription<UserAccelerometerEvent>? _subscription;
   final VoidCallback onBackTapTriggered;
 
-  bool _isEnabled = true;
+  bool _isEnabled = false;
   int _requiredTaps = 2; // 2 = Double Tap, 3 = Triple Tap
 
   final List<DateTime> _tapTimestamps = [];
@@ -16,7 +16,7 @@ class BackTapDetector {
 
   BackTapDetector({
     required this.onBackTapTriggered,
-    bool enabled = true,
+    bool enabled = false,
     int requiredTaps = 2,
   }) {
     _isEnabled = enabled;
@@ -48,8 +48,8 @@ class BackTapDetector {
     _requiredTaps = requiredTaps;
     if (!enabled) {
       stop();
-    } else if (_subscription == null) {
-      start();
+    } else {
+      start(enabled: true, requiredTaps: requiredTaps);
     }
   }
 

@@ -16,8 +16,8 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
   bool _shakeEnabled = true;
   bool _bleEnabled = false;
   bool _volumeTriggerEnabled = true;
-  bool _accidentDetectionEnabled = true;
-  bool _backTapEnabled = true;
+  bool _accidentDetectionEnabled = false; // Off by default: user must explicitly enable
+  bool _backTapEnabled = false; // Off by default: user must explicitly enable
   int _backTapCount = 2; // 2 = Double Tap, 3 = Triple Tap
   bool _accessibilityServiceActive = false;
   String _volumeButtonType = "down"; // "down" or "up"
@@ -74,8 +74,8 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
       _shakeEnabled = prefs.getBool('shakeEnabled') ?? true;
       _bleEnabled = prefs.getBool('bleEnabled') ?? false;
       _volumeTriggerEnabled = prefs.getBool('volumeTriggerEnabled') ?? true;
-      _accidentDetectionEnabled = prefs.getBool('accidentDetectionEnabled') ?? true;
-      _backTapEnabled = prefs.getBool('backTapEnabled') ?? true;
+      _accidentDetectionEnabled = prefs.getBool('accidentDetectionEnabled') ?? false;
+      _backTapEnabled = prefs.getBool('backTapEnabled') ?? false;
       _backTapCount = prefs.getInt('backTapCount') ?? 2;
       _volumeButtonType = prefs.getString('volumeButtonType') ?? "down";
       _volumeClickCount = prefs.getInt('volumeClickCount') ?? 3;

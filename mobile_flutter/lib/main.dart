@@ -138,6 +138,9 @@ class _UnifiedSafetyScreenState extends State<UnifiedSafetyScreen> {
             : Colors.blueAccent.withValues(alpha: 0.18),
         onDestinationSelected: (index) {
           setState(() => _currentTab = index);
+          if (index == 0) {
+            _dashboardKey.currentState?.reloadSettings();
+          }
         },
         destinations: const [
           NavigationDestination(
@@ -176,7 +179,7 @@ class DashboardScreen extends StatefulWidget {
   State<DashboardScreen> createState() => DashboardScreenState();
 }
 
-class DashboardScreenState extends State<DashboardScreen> {
+class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObserver {
   bool isSosActive = false;
   String batteryLevel = "Unknown";
   String locationStatus = "GPS Ready";
@@ -186,6 +189,7 @@ class DashboardScreenState extends State<DashboardScreen> {
   final AudioPlayer _audioPlayer = AudioPlayer();
   Timer? _locationTimer;
   StreamSubscription<AccelerometerEvent>? _shakeSubscription;
+  bool _isShakeEnabled = true;
   
   String serverUrl = 'https://safecommute-uvn5.onrender.com';
   
@@ -209,6 +213,7 @@ class DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _initBattery();
     _initSocket();
     _requestPermissions();
@@ -225,27 +230,56 @@ class DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  void _initAccidentAndBackTapDetectors() async {
-    final prefs = await SharedPreferences.getInstance();
-    bool accidentEnabled = prefs.getBool('accidentDetectionEnabled') ?? true;
-    bool backTapEnabled = prefs.getBool('backTapEnabled') ?? true;
-    int backTapCount = prefs.getInt('backTapCount') ?? 2;
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      reloadSettings();
+    }
+  }
 
-    _accidentDetector = MobileAccidentDetector(
+  Future<void> reloadSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    bool accidentEnabled = prefs.getBool('accidentDetectionEnabled') ?? false;
+    bool backTapEnabled = prefs.getBool('backTapEnabled') ?? false;
+    int backTapCount = prefs.getInt('backTapCount') ?? 2;
+    _isShakeEnabled = prefs.getBool('shakeEnabled') ?? true;
+
+    _accidentDetector ??= MobileAccidentDetector(
       onAccidentDetected: _onAccidentDetectedBySensors,
     );
-    _accidentDetector?.start(enabled: accidentEnabled);
+    if (accidentEnabled) {
+      _accidentDetector?.start(enabled: true);
+    } else {
+      _accidentDetector?.stop();
+    }
 
-    _backTapDetector = BackTapDetector(
+    _backTapDetector ??= BackTapDetector(
       onBackTapTriggered: _onBackTapTriggered,
       enabled: backTapEnabled,
       requiredTaps: backTapCount,
     );
-    _backTapDetector?.start();
+    if (backTapEnabled) {
+      _backTapDetector?.start(enabled: true, requiredTaps: backTapCount);
+    } else {
+      _backTapDetector?.stop();
+    }
+
+    await _syncSettingsToNative();
   }
 
-  void _onBackTapTriggered() {
+  void _initAccidentAndBackTapDetectors() async {
+    await reloadSettings();
+  }
+
+  void _onBackTapTriggered() async {
     if (isSosActive) return;
+    final prefs = await SharedPreferences.getInstance();
+    bool backTapEnabled = prefs.getBool('backTapEnabled') ?? false;
+    if (!backTapEnabled) {
+      _backTapDetector?.stop();
+      return;
+    }
+
     HapticFeedback.heavyImpact();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -265,8 +299,15 @@ class DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  void _onAccidentDetectedBySensors(AccidentTelemetry telemetry) {
+  void _onAccidentDetectedBySensors(AccidentTelemetry telemetry) async {
     if (isSosActive) return;
+    final prefs = await SharedPreferences.getInstance();
+    bool accidentEnabled = prefs.getBool('accidentDetectionEnabled') ?? false;
+    if (!accidentEnabled) {
+      _accidentDetector?.stop();
+      return;
+    }
+
     _showAccidentCountdownDialog(telemetry);
   }
 
@@ -400,6 +441,10 @@ class DashboardScreenState extends State<DashboardScreen> {
 
     _volumeChannel.setMethodCallHandler((call) async {
       if (call.method == "triggerSosNow") {
+        final prefs = await SharedPreferences.getInstance();
+        bool volumeTriggerEnabled = prefs.getBool('volumeTriggerEnabled') ?? true;
+        if (!volumeTriggerEnabled) return;
+
         final args = call.arguments as Map<dynamic, dynamic>?;
         int clicks = args?['clicks'] ?? 3;
         int level = args?['severityLevel'] ?? 1;
@@ -418,6 +463,10 @@ class DashboardScreenState extends State<DashboardScreen> {
           _escalateSeverity(clicks, level, text);
         }
       } else if (call.method == "onSeverityEscalated") {
+        final prefs = await SharedPreferences.getInstance();
+        bool volumeTriggerEnabled = prefs.getBool('volumeTriggerEnabled') ?? true;
+        if (!volumeTriggerEnabled) return;
+
         final args = call.arguments as Map<dynamic, dynamic>?;
         int clicks = args?['clicks'] ?? 4;
         int level = args?['severityLevel'] ?? 2;
@@ -574,7 +623,7 @@ class DashboardScreenState extends State<DashboardScreen> {
 
   void _initShakeDetection() {
     _shakeSubscription = accelerometerEventStream().listen((AccelerometerEvent event) async {
-      if (isSosActive) return; 
+      if (!_isShakeEnabled || isSosActive) return; 
       
       double gForce = sqrt(event.x * event.x + event.y * event.y + event.z * event.z) / 9.8;
       
@@ -1020,6 +1069,7 @@ class DashboardScreenState extends State<DashboardScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _audioPlayer.dispose();
     _locationTimer?.cancel();
     _shakeSubscription?.cancel();
@@ -1059,9 +1109,10 @@ class DashboardScreenState extends State<DashboardScreen> {
           IconButton(
             icon: const Icon(Icons.settings),
             tooltip: "Settings",
-            onPressed: () {
-              // Navigate to Settings Screen
-              Navigator.push(context, MaterialPageRoute(builder: (context) => const SettingsScreen()));
+            onPressed: () async {
+              // Navigate to Settings Screen and reload immediately on return
+              await Navigator.push(context, MaterialPageRoute(builder: (context) => const SettingsScreen()));
+              await reloadSettings();
             },
           )
         ],

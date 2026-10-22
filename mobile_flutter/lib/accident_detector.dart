@@ -69,7 +69,7 @@ class MobileAccidentDetector {
   StreamSubscription<AccelerometerEvent>? _accelSubscription;
   final void Function(AccidentTelemetry telemetry) onAccidentDetected;
 
-  bool _isEnabled = true;
+  bool _isEnabled = false;
   double _currentSpeedKmh = 0.0;
 
   // Fall detection state machine
@@ -90,9 +90,12 @@ class MobileAccidentDetector {
     }
   }
 
-  void start({bool enabled = true}) {
+  void start({bool enabled = false}) {
     _isEnabled = enabled;
-    if (!_isEnabled) return;
+    if (!_isEnabled) {
+      stop();
+      return;
+    }
 
     _accelSubscription?.cancel();
     _accelSubscription = accelerometerEventStream().listen(_processAccelerometer);
@@ -108,8 +111,8 @@ class MobileAccidentDetector {
     _isEnabled = enabled;
     if (!enabled) {
       stop();
-    } else if (_accelSubscription == null) {
-      start();
+    } else {
+      start(enabled: true);
     }
   }
 

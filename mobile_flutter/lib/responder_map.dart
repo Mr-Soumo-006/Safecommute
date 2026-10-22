@@ -101,6 +101,9 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
   void _initVolumeButtonDetection() {
     _volumeChannel.setMethodCallHandler((call) async {
       if (call.method == "triggerSosNow") {
+        final prefs = await SharedPreferences.getInstance();
+        bool volumeTriggerEnabled = prefs.getBool('volumeTriggerEnabled') ?? true;
+        if (!volumeTriggerEnabled) return;
         _triggerResponderEmergencyDistress();
       } else if (call.method == "onVolumePressed") {
         String direction = call.arguments as String? ?? "down";
