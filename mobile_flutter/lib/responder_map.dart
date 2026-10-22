@@ -596,7 +596,7 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       ),
                       icon: const Icon(Icons.volume_off, size: 18),
-                      label: const Text("OFF Alert", style: TextStyle(fontWeight: FontWeight.bold)),
+                      label: const Text("STOP ALARM", style: TextStyle(fontWeight: FontWeight.bold)),
                       onPressed: () {
                         Navigator.pop(ctx);
                         _muteAlarm(victimUsername: username);
@@ -626,10 +626,7 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
           ),
         );
       },
-    ).then((_) {
-      // Always silence alarm when user dismisses modal by any method (back or tap outside)
-      _muteAlarm(victimUsername: username);
-    });
+    );
   }
 
   void _startTurnByTurnNavigation(double lat, double lng) async {
@@ -1063,13 +1060,13 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
             ),
 
           // Active Siren Mute Bar or Peace Mode Status
-          if (_isAlarmPlaying)
+          if (_isAlarmPlaying || (_activeAlerts.isNotEmpty && !_isAlertsSilenced))
             Positioned(
               top: _activeAlerts.length > 1 ? 60 : 14,
               left: 14,
               right: 14,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                 decoration: BoxDecoration(
                   color: Colors.red.shade900,
                   borderRadius: BorderRadius.circular(12),
@@ -1079,24 +1076,28 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.campaign, color: Colors.white, size: 22),
+                    const Icon(Icons.campaign, color: Colors.white, size: 24),
                     const SizedBox(width: 8),
                     const Expanded(
                       child: Text(
-                        "🚨 CRITICAL SOS ALARM ACTIVE",
-                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 12),
+                        "🚨 SOS ALARM RINGING",
+                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 13),
                       ),
                     ),
                     ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.white,
                         foregroundColor: Colors.red.shade900,
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                         minimumSize: Size.zero,
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                       ),
-                      icon: const Icon(Icons.volume_off, size: 15),
-                      label: const Text("OFF ALERT & SEARCH", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11)),
+                      icon: const Icon(Icons.volume_off, size: 16, color: Colors.red),
+                      label: const Text(
+                        "STOP ALARM",
+                        style: TextStyle(fontWeight: FontWeight.w900, fontSize: 12),
+                      ),
                       onPressed: () => _muteAlarm(),
                     ),
                   ],

@@ -764,6 +764,22 @@ class DashboardScreenState extends State<DashboardScreen> {
                         style: TextStyle(fontWeight: FontWeight.w900, fontSize: 11),
                       ),
                     ),
+                    const SizedBox(width: 6),
+                    OutlinedButton(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        side: const BorderSide(color: Colors.white70),
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                      onPressed: _dismissIncomingDistressAlert,
+                      child: const Text(
+                        "STOP ALARM",
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
+                      ),
+                    ),
                     const SizedBox(width: 4),
                     GestureDetector(
                       onTap: _dismissIncomingDistressAlert,

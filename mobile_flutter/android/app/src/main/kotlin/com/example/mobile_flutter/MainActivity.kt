@@ -77,7 +77,8 @@ class MainActivity: FlutterActivity() {
         }
         if (intent?.getBooleanExtra("open_responder_map", false) == true) {
             intent.removeExtra("open_responder_map")
-            cancelEmergencyNotification()
+            // Crucial: DO NOT cancel the emergency notification or mute the alarm here!
+            // The alarm rings continuously until the user explicitly stops it in the app.
             instance?.runOnUiThread {
                 instance?.volumeChannel?.invokeMethod("openResponderMap", null)
             }
@@ -202,19 +203,17 @@ class MainActivity: FlutterActivity() {
 
             triggerHeavyVibration()
 
-            // 2. If ResponderAlertService is running, trigger its looping sound as well
-            if (ResponderAlertService.isRunning) {
-                val serviceIntent = Intent(this, ResponderAlertService::class.java).apply {
-                    action = ResponderAlertService.ACTION_TRIGGER_EMERGENCY
-                    putExtra("title", title)
-                    putExtra("body", body)
-                    putExtra("victimId", victimId)
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    startForegroundService(serviceIntent)
-                } else {
-                    startService(serviceIntent)
-                }
+            // 2. Always trigger ResponderAlertService for looping alarm and continuous vibration
+            val serviceIntent = Intent(this, ResponderAlertService::class.java).apply {
+                action = ResponderAlertService.ACTION_TRIGGER_EMERGENCY
+                putExtra("title", title)
+                putExtra("body", body)
+                putExtra("victimId", victimId)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
+            } else {
+                startService(serviceIntent)
             }
 
             val channelId = "safecommute_emergency_channel"
@@ -271,14 +270,14 @@ class MainActivity: FlutterActivity() {
             builder.setSmallIcon(R.mipmap.launcher_icon)
                 .setContentTitle(title)
                 .setContentText(body)
-                .setAutoCancel(true)
+                .setAutoCancel(false)
+                .setOngoing(true)
                 .setContentIntent(pendingIntent)
-                .setDeleteIntent(mutePendingIntent)
                 .setPriority(Notification.PRIORITY_MAX)
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
                 builder.setStyle(Notification.BigTextStyle().bigText(body))
-                builder.addAction(Notification.Action.Builder(null, "TURN OFF ALARM", mutePendingIntent).build())
+                builder.addAction(Notification.Action.Builder(null, "STOP ALARM", mutePendingIntent).build())
                 builder.addAction(Notification.Action.Builder(null, "VIEW LIVE RADAR", pendingIntent).build())
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {

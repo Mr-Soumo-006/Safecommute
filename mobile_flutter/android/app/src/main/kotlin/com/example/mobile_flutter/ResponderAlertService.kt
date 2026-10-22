@@ -98,7 +98,11 @@ class ResponderAlertService : Service() {
                     manager.cancel(EMERGENCY_NOTIFICATION_ID)
                 } catch (_: Exception) {}
                 MainActivity.notifyAlarmMutedExternally()
-                if (!isRunning) {
+                if (isRunning) {
+                    val notification = buildServiceNotification()
+                    startForeground(SERVICE_NOTIFICATION_ID, notification)
+                } else {
+                    stopForeground(true)
                     stopSelf()
                 }
             }
@@ -219,14 +223,14 @@ class ResponderAlertService : Service() {
         builder.setSmallIcon(R.mipmap.launcher_icon)
             .setContentTitle(title)
             .setContentText(body)
-            .setAutoCancel(true)
+            .setAutoCancel(false)
+            .setOngoing(true)
             .setContentIntent(pendingIntent)
-            .setDeleteIntent(mutePendingIntent)
             .setPriority(Notification.PRIORITY_MAX)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
             builder.setStyle(Notification.BigTextStyle().bigText(body))
-            builder.addAction(Notification.Action.Builder(null, "TURN OFF ALARM", mutePendingIntent).build())
+            builder.addAction(Notification.Action.Builder(null, "STOP ALARM", mutePendingIntent).build())
             builder.addAction(Notification.Action.Builder(null, "VIEW LIVE MAP", pendingIntent).build())
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -234,8 +238,13 @@ class ResponderAlertService : Service() {
             builder.setVisibility(Notification.VISIBILITY_PUBLIC)
         }
 
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.notify(EMERGENCY_NOTIFICATION_ID, builder.build())
+        val notification = builder.build()
+        try {
+            startForeground(EMERGENCY_NOTIFICATION_ID, notification)
+        } catch (_: Exception) {
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.notify(EMERGENCY_NOTIFICATION_ID, notification)
+        }
     }
 
     private fun wakeUpDevice() {
@@ -305,21 +314,22 @@ class ResponderAlertService : Service() {
 
     private fun triggerVibration() {
         try {
+            val pattern = longArrayOf(0, 500, 200, 500, 200, 800)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
                 vibratorManager?.defaultVibrator?.vibrate(
-                    VibrationEffect.createWaveform(longArrayOf(0, 500, 200, 500, 200, 800), -1)
+                    VibrationEffect.createWaveform(pattern, 0)
                 )
             } else {
                 @Suppress("DEPRECATION")
                 val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     vibrator?.vibrate(
-                        VibrationEffect.createWaveform(longArrayOf(0, 500, 200, 500, 200, 800), -1)
+                        VibrationEffect.createWaveform(pattern, 0)
                     )
                 } else {
                     @Suppress("DEPRECATION")
-                    vibrator?.vibrate(longArrayOf(0, 500, 200, 500, 200, 800), -1)
+                    vibrator?.vibrate(pattern, 0)
                 }
             }
         } catch (_: Exception) {}
