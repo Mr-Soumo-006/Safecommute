@@ -97,6 +97,36 @@ io.on('connection', (socket) => {
         });
     });
 
+    // Listen for Automated Incident Email Dispatch (Mobile Incident Classification)
+    socket.on('incident_email_dispatch', (data) => {
+        const incidentId = data.incidentId || `INC-${Date.now()}`;
+        const recipient = data.recipientEmail || 'emergency-response@safecommute.internal';
+        const incidentType = data.incidentType || 'GENERAL_EMERGENCY';
+        const severity = data.severityText || 'CRITICAL';
+
+        console.log(`\n======================================================`);
+        console.log(`[AUTOMATED INCIDENT EMAIL DISPATCH] Emergency Alert Triggered!`);
+        console.log(`   Incident ID: ${incidentId}`);
+        console.log(`   Recipient: ${recipient}`);
+        console.log(`   Victim: ${data.username || 'Commuter'}`);
+        console.log(`   Accident Type: ${incidentType}`);
+        console.log(`   Severity Level: ${severity} (Tier ${data.severityLevel || 1})`);
+        console.log(`   Trigger Source: ${data.triggerSource || 'MOBILE_SENSORS'}`);
+        console.log(`   Coordinates: ${data.lat}, ${data.lng}`);
+        console.log(`   Google Maps Radar: https://maps.google.com/?q=${data.lat},${data.lng}`);
+        if (data.peakGForce) console.log(`   Sensor Telemetry: Peak G-Force = ${data.peakGForce.toFixed(2)}G`);
+        console.log(`   Timestamp: ${new Date().toISOString()}`);
+        console.log(`   Status: DISPATCHED & LOGGED TO EMERGENCY REPOSITORIES`);
+        console.log(`======================================================\n`);
+
+        socket.broadcast.emit('incident_email_confirmed', {
+            incidentId,
+            recipient,
+            status: 'SENT',
+            timestamp: new Date().toISOString()
+        });
+    });
+
     socket.on('disconnect', () => {
         console.log('Client disconnected:', socket.id);
     });

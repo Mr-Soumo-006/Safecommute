@@ -32,9 +32,25 @@ class MainActivity: FlutterActivity() {
     companion object {
         var instance: MainActivity? = null
 
-        fun notifySosTriggered() {
+        fun notifySosTriggered(clicks: Int = 3, severityLevel: Int = 1, severityText: String = "ELEVATED") {
             instance?.runOnUiThread {
-                instance?.volumeChannel?.invokeMethod("triggerSosNow", null)
+                val args = mapOf(
+                    "clicks" to clicks,
+                    "severityLevel" to severityLevel,
+                    "severityText" to severityText
+                )
+                instance?.volumeChannel?.invokeMethod("triggerSosNow", args)
+            }
+        }
+
+        fun notifySeverityEscalated(clicks: Int, severityLevel: Int, severityText: String) {
+            instance?.runOnUiThread {
+                val args = mapOf(
+                    "clicks" to clicks,
+                    "severityLevel" to severityLevel,
+                    "severityText" to severityText
+                )
+                instance?.volumeChannel?.invokeMethod("onSeverityEscalated", args)
             }
         }
 
@@ -73,7 +89,10 @@ class MainActivity: FlutterActivity() {
     private fun checkIntentForSosTrigger(intent: Intent?) {
         if (intent?.getBooleanExtra("trigger_sos_direct", false) == true) {
             intent.removeExtra("trigger_sos_direct")
-            notifySosTriggered()
+            val clicks = intent.getIntExtra("clicks", 3)
+            val severityLevel = intent.getIntExtra("severityLevel", 1)
+            val severityText = intent.getStringExtra("severityText") ?: "ELEVATED"
+            notifySosTriggered(clicks, severityLevel, severityText)
         }
         if (intent?.getBooleanExtra("open_responder_map", false) == true) {
             intent.removeExtra("open_responder_map")

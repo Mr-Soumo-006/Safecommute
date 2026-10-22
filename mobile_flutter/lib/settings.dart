@@ -16,16 +16,21 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
   bool _shakeEnabled = true;
   bool _bleEnabled = false;
   bool _volumeTriggerEnabled = true;
+  bool _accidentDetectionEnabled = true;
+  bool _backTapEnabled = true;
+  int _backTapCount = 2; // 2 = Double Tap, 3 = Triple Tap
   bool _accessibilityServiceActive = false;
   String _volumeButtonType = "down"; // "down" or "up"
   int _volumeClickCount = 3; // 2, 3, 4, 5
   double _alertRadiusKm = 5.0; // 2.0, 5.0, 10.0, 0.0 (All)
   List<String> _savedContacts = [];
   String _myUsername = "";
+  String _emergencyEmail = "";
 
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _usernameController = TextEditingController();
+  final TextEditingController _emailController = TextEditingController();
 
   static const MethodChannel _volumeChannel = MethodChannel('com.safecommute.app/volume');
 
@@ -69,12 +74,17 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
       _shakeEnabled = prefs.getBool('shakeEnabled') ?? true;
       _bleEnabled = prefs.getBool('bleEnabled') ?? false;
       _volumeTriggerEnabled = prefs.getBool('volumeTriggerEnabled') ?? true;
+      _accidentDetectionEnabled = prefs.getBool('accidentDetectionEnabled') ?? true;
+      _backTapEnabled = prefs.getBool('backTapEnabled') ?? true;
+      _backTapCount = prefs.getInt('backTapCount') ?? 2;
       _volumeButtonType = prefs.getString('volumeButtonType') ?? "down";
       _volumeClickCount = prefs.getInt('volumeClickCount') ?? 3;
       _alertRadiusKm = prefs.getDouble('alertRadiusKm') ?? 5.0;
       _savedContacts = prefs.getStringList('savedContacts') ?? [];
       _myUsername = prefs.getString('username') ?? "";
+      _emergencyEmail = prefs.getString('emergencyEmail') ?? "";
       _usernameController.text = _myUsername;
+      _emailController.text = _emergencyEmail;
     });
     _checkAccessibilityStatus();
   }
@@ -85,10 +95,19 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
     await prefs.setBool('shakeEnabled', _shakeEnabled);
     await prefs.setBool('bleEnabled', _bleEnabled);
     await prefs.setBool('volumeTriggerEnabled', _volumeTriggerEnabled);
+    await prefs.setBool('accidentDetectionEnabled', _accidentDetectionEnabled);
+    await prefs.setBool('backTapEnabled', _backTapEnabled);
+    await prefs.setInt('backTapCount', _backTapCount);
     await prefs.setString('volumeButtonType', _volumeButtonType);
     await prefs.setInt('volumeClickCount', _volumeClickCount);
     await prefs.setDouble('alertRadiusKm', _alertRadiusKm);
     await _syncToNative();
+  }
+
+  Future<void> _saveEmergencyEmail(String val) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('emergencyEmail', val.trim());
+    _emergencyEmail = val.trim();
   }
 
   Future<void> _saveUsername(String val) async {
@@ -232,6 +251,19 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
               controller: _usernameController,
               onChanged: _saveUsername,
             ),
+            const SizedBox(height: 12),
+            TextField(
+              decoration: const InputDecoration(
+                labelText: 'Emergency Alert Email (For Incident Reports)',
+                hintText: 'e.g. safety@domain.com or family@gmail.com',
+                prefixIcon: Icon(Icons.email_outlined, size: 18),
+                isDense: true,
+              ),
+              style: const TextStyle(color: Colors.black87),
+              keyboardType: TextInputType.emailAddress,
+              controller: _emailController,
+              onChanged: _saveEmergencyEmail,
+            ),
             const SizedBox(height: 25),
             
             const Text("Emergency Contacts", style: TextStyle(color: Colors.redAccent, fontSize: 18, fontWeight: FontWeight.bold)),
@@ -318,8 +350,8 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
               },
             ),
             SwitchListTile(
-              title: const Text('Enable Volume Button SOS', style: TextStyle(color: Colors.black87, fontWeight: FontWeight.w600)),
-              subtitle: const Text('Discreetly trigger emergency by clicking phone volume button', style: TextStyle(color: Colors.black54)),
+              title: const Text('Enable Volume Button SOS & Priority Escalation', style: TextStyle(color: Colors.black87, fontWeight: FontWeight.w600)),
+              subtitle: const Text('Clicking 3x triggers SOS; additional presses (4-5x, 6+x) dynamically escalate priority to Urgent & Critical', style: TextStyle(color: Colors.black54)),
               value: _volumeTriggerEnabled,
               activeThumbColor: Colors.redAccent,
               onChanged: (bool value) {
@@ -516,6 +548,75 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
               ),
               const Divider(),
             ],
+
+            SwitchListTile(
+              title: const Row(
+                children: [
+                  Text('Mobile Accident & Crash Detection', style: TextStyle(color: Colors.black87, fontWeight: FontWeight.w600)),
+                  SizedBox(width: 6),
+                  Icon(Icons.car_crash, color: Colors.redAccent, size: 20),
+                ],
+              ),
+              subtitle: const Text('Detects vehicle collisions, pedestrian falls, and violent struggles using phone sensors (No external hardware)', style: TextStyle(color: Colors.black54)),
+              value: _accidentDetectionEnabled,
+              activeThumbColor: Colors.redAccent,
+              onChanged: (bool value) {
+                setState(() => _accidentDetectionEnabled = value);
+                _saveToggleSettings();
+              },
+            ),
+
+            SwitchListTile(
+              title: const Row(
+                children: [
+                  Text(' iPhone-Style Back Tap SOS', style: TextStyle(color: Colors.black87, fontWeight: FontWeight.w600)),
+                  SizedBox(width: 6),
+                  Icon(Icons.touch_app, color: Colors.blueAccent, size: 20),
+                ],
+              ),
+              subtitle: const Text('Firmly tap the back of your phone with your finger to instantly trigger SOS', style: TextStyle(color: Colors.black54)),
+              value: _backTapEnabled,
+              activeThumbColor: Colors.blueAccent,
+              onChanged: (bool value) {
+                setState(() => _backTapEnabled = value);
+                _saveToggleSettings();
+              },
+            ),
+            if (_backTapEnabled) ...[
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
+                child: Row(
+                  children: [
+                    const Text("Back Tap Trigger:", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.black87)),
+                    const SizedBox(width: 12),
+                    ChoiceChip(
+                      label: const Text("Double Tap (2x)"),
+                      selected: _backTapCount == 2,
+                      selectedColor: Colors.blueAccent.withValues(alpha: 0.2),
+                      onSelected: (selected) {
+                        if (selected) {
+                          setState(() => _backTapCount = 2);
+                          _saveToggleSettings();
+                        }
+                      },
+                    ),
+                    const SizedBox(width: 8),
+                    ChoiceChip(
+                      label: const Text("Triple Tap (3x)"),
+                      selected: _backTapCount == 3,
+                      selectedColor: Colors.blueAccent.withValues(alpha: 0.2),
+                      onSelected: (selected) {
+                        if (selected) {
+                          setState(() => _backTapCount = 3);
+                          _saveToggleSettings();
+                        }
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            const Divider(),
             SwitchListTile(
               title: const Text('Enable Loud Siren Alarm', style: TextStyle(color: Colors.black87)),
               subtitle: const Text('Plays maximum volume siren on SOS', style: TextStyle(color: Colors.black54)),

@@ -13,6 +13,8 @@ import 'dart:math';
 
 import 'settings.dart'; 
 import 'responder_map.dart';
+import 'accident_detector.dart';
+import 'back_tap_detector.dart';
 
 void main() {
   runApp(const SafeCommuteApp());
@@ -192,6 +194,18 @@ class DashboardScreenState extends State<DashboardScreen> {
   final List<DateTime> _volumePressTimestamps = [];
   final Set<String> _silencedVictims = {};
 
+  // Incident Classification & Severity Escalation State
+  int _currentSeverityLevel = 1; // 1 = Elevated, 2 = Urgent, 3 = Critical
+  String _currentSeverityText = "ELEVATED";
+  int _currentClicks = 3;
+  String _detectedIncidentType = "PANIC_SOS";
+  String _triggerSource = "MANUAL_SOS";
+  double? _lastPeakGForce;
+  double? _lastSpeedKmh;
+
+  MobileAccidentDetector? _accidentDetector;
+  BackTapDetector? _backTapDetector;
+
   @override
   void initState() {
     super.initState();
@@ -200,6 +214,7 @@ class DashboardScreenState extends State<DashboardScreen> {
     _requestPermissions();
     _initShakeDetection();
     _initVolumeButtonDetection();
+    _initAccidentAndBackTapDetectors();
 
     if (widget.autoTriggerSos) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -210,15 +225,204 @@ class DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  void _initAccidentAndBackTapDetectors() async {
+    final prefs = await SharedPreferences.getInstance();
+    bool accidentEnabled = prefs.getBool('accidentDetectionEnabled') ?? true;
+    bool backTapEnabled = prefs.getBool('backTapEnabled') ?? true;
+    int backTapCount = prefs.getInt('backTapCount') ?? 2;
+
+    _accidentDetector = MobileAccidentDetector(
+      onAccidentDetected: _onAccidentDetectedBySensors,
+    );
+    _accidentDetector?.start(enabled: accidentEnabled);
+
+    _backTapDetector = BackTapDetector(
+      onBackTapTriggered: _onBackTapTriggered,
+      enabled: backTapEnabled,
+      requiredTaps: backTapCount,
+    );
+    _backTapDetector?.start();
+  }
+
+  void _onBackTapTriggered() {
+    if (isSosActive) return;
+    HapticFeedback.heavyImpact();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(" iPhone Back Tap Detected: Emergency SOS Triggered!"),
+          backgroundColor: Colors.blueAccent,
+          duration: Duration(seconds: 3),
+        ),
+      );
+    }
+    toggleSOS(
+      severityLevel: 2,
+      severityText: "URGENT",
+      clickCount: 2,
+      triggerSource: "BACK_TAP",
+      incidentType: "BACK_TAP_SOS",
+    );
+  }
+
+  void _onAccidentDetectedBySensors(AccidentTelemetry telemetry) {
+    if (isSosActive) return;
+    _showAccidentCountdownDialog(telemetry);
+  }
+
+  void _showAccidentCountdownDialog(AccidentTelemetry telemetry) {
+    int countdown = 10;
+    Timer? countdownTimer;
+    HapticFeedback.heavyImpact();
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            countdownTimer ??= Timer.periodic(const Duration(seconds: 1), (t) {
+              if (countdown > 1) {
+                setDialogState(() => countdown--);
+                HapticFeedback.mediumImpact();
+              } else {
+                t.cancel();
+                Navigator.of(ctx, rootNavigator: true).pop();
+                _triggerAccidentSos(telemetry);
+              }
+            });
+
+            return AlertDialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: Row(
+                children: [
+                  Text(telemetry.type.iconEmoji, style: const TextStyle(fontSize: 28)),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      "ACCIDENT DETECTED",
+                      style: TextStyle(fontWeight: FontWeight.w900, color: Colors.red.shade900, fontSize: 16),
+                    ),
+                  ),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    telemetry.type.displayName,
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    "Impact G-Force: ${telemetry.peakGForce.toStringAsFixed(1)} G"
+                    "${telemetry.estimatedSpeedKmh > 0 ? '\nEstimated Speed: ${telemetry.estimatedSpeedKmh.toStringAsFixed(1)} km/h' : ''}",
+                    style: const TextStyle(fontSize: 13, color: Colors.black54),
+                  ),
+                  const SizedBox(height: 16),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.red.shade50,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.red.shade300),
+                    ),
+                    child: Column(
+                      children: [
+                        const Text(
+                          "Broadcasting SOS & Incident Email in:",
+                          style: TextStyle(fontSize: 12, color: Colors.black54),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          "$countdown s",
+                          style: TextStyle(
+                            fontSize: 32,
+                            fontWeight: FontWeight.w900,
+                            color: Colors.red.shade900,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                OutlinedButton(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.black87,
+                    side: const BorderSide(color: Colors.grey),
+                  ),
+                  onPressed: () {
+                    countdownTimer?.cancel();
+                    Navigator.of(ctx, rootNavigator: true).pop();
+                  },
+                  child: const Text("I'M OKAY - CANCEL", style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red.shade900,
+                    foregroundColor: Colors.white,
+                  ),
+                  onPressed: () {
+                    countdownTimer?.cancel();
+                    Navigator.of(ctx, rootNavigator: true).pop();
+                    _triggerAccidentSos(telemetry);
+                  },
+                  child: const Text("DISPATCH NOW", style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _triggerAccidentSos(AccidentTelemetry telemetry) {
+    if (isSosActive) return;
+    _lastPeakGForce = telemetry.peakGForce;
+    _lastSpeedKmh = telemetry.estimatedSpeedKmh;
+    toggleSOS(
+      incidentType: telemetry.type.code,
+      severityLevel: 3,
+      severityText: "CRITICAL",
+      triggerSource: "ACCIDENT_DETECTOR",
+      peakGForce: telemetry.peakGForce,
+      speedKmh: telemetry.estimatedSpeedKmh,
+    );
+  }
+
   void _initVolumeButtonDetection() {
     _syncSettingsToNative();
 
     _volumeChannel.setMethodCallHandler((call) async {
       if (call.method == "triggerSosNow") {
+        final args = call.arguments as Map<dynamic, dynamic>?;
+        int clicks = args?['clicks'] ?? 3;
+        int level = args?['severityLevel'] ?? 1;
+        String text = args?['severityText'] ?? "ELEVATED";
+
         if (!isSosActive) {
           HapticFeedback.heavyImpact();
-          toggleSOS();
+          toggleSOS(
+            severityLevel: level,
+            severityText: text,
+            clickCount: clicks,
+            triggerSource: "VOLUME_BUTTON",
+            incidentType: "PANIC_SOS",
+          );
+        } else {
+          _escalateSeverity(clicks, level, text);
         }
+      } else if (call.method == "onSeverityEscalated") {
+        final args = call.arguments as Map<dynamic, dynamic>?;
+        int clicks = args?['clicks'] ?? 4;
+        int level = args?['severityLevel'] ?? 2;
+        String text = args?['severityText'] ?? "URGENT";
+        _escalateSeverity(clicks, level, text);
       } else if (call.method == "onVolumePressed") {
         String direction = call.arguments as String? ?? "down";
         
@@ -226,24 +430,127 @@ class DashboardScreenState extends State<DashboardScreen> {
         bool volumeTriggerEnabled = prefs.getBool('volumeTriggerEnabled') ?? true;
         if (!volumeTriggerEnabled) return;
 
-        String selectedButton = prefs.getString('volumeButtonType') ?? "down"; // "down" or "up"
-        int requiredClicks = prefs.getInt('volumeClickCount') ?? 3; // default 3 clicks
+        String selectedButton = prefs.getString('volumeButtonType') ?? "down";
+        int requiredClicks = prefs.getInt('volumeClickCount') ?? 3;
 
         if (direction == selectedButton) {
           final now = DateTime.now();
           _volumePressTimestamps.add(now);
+          _volumePressTimestamps.removeWhere((t) => now.difference(t).inMilliseconds > 3000);
 
-          // Keep only presses within the last 2.0 seconds
-          _volumePressTimestamps.removeWhere((t) => now.difference(t).inMilliseconds > 2000);
-
-          if (_volumePressTimestamps.length >= requiredClicks) {
-            _volumePressTimestamps.clear();
-            HapticFeedback.heavyImpact();
-            toggleSOS();
+          int totalCount = _volumePressTimestamps.length;
+          if (totalCount >= requiredClicks) {
+            if (!isSosActive) {
+              HapticFeedback.heavyImpact();
+              toggleSOS(
+                severityLevel: 1,
+                severityText: "ELEVATED",
+                clickCount: totalCount,
+                triggerSource: "VOLUME_BUTTON",
+                incidentType: "PANIC_SOS",
+              );
+            } else if (totalCount >= 4 && totalCount <= 5) {
+              _escalateSeverity(totalCount, 2, "URGENT");
+            } else if (totalCount >= 6) {
+              _escalateSeverity(totalCount, 3, "CRITICAL");
+            }
           }
         }
       }
     });
+  }
+
+  void _escalateSeverity(int clicks, int level, String text) async {
+    if (level <= _currentSeverityLevel && clicks <= _currentClicks) return;
+
+    setState(() {
+      _currentClicks = clicks;
+      _currentSeverityLevel = level;
+      _currentSeverityText = text;
+    });
+
+    HapticFeedback.heavyImpact();
+
+    final prefs = await SharedPreferences.getInstance();
+    String myName = prefs.getString('username') ?? "A Commuter";
+
+    Position? pos;
+    try {
+      pos = await Geolocator.getLastKnownPosition();
+    } catch (_) {}
+
+    socket.emit('encrypted_alert', {
+      'targetContactId': 'all',
+      'lat': pos?.latitude ?? 22.5726,
+      'lng': pos?.longitude ?? 88.3639,
+      'username': myName,
+      'batteryMetadata': 85,
+      'timestamp': DateTime.now().toIso8601String(),
+      'isLiveUpdate': false,
+      'incidentType': _detectedIncidentType,
+      'severityLevel': _currentSeverityLevel,
+      'severityText': _currentSeverityText,
+      'clickCount': _currentClicks,
+      'triggerSource': "VOLUME_BUTTON_ESCALATION",
+    });
+
+    String mapLink = "https://maps.google.com/?q=${pos?.latitude ?? 22.5726},${pos?.longitude ?? 88.3639}";
+    String escalatedMessage = "[$text - $clicks SOS PRESSES] $myName's EMERGENCY ESCALATED! Immediate help needed: $mapLink";
+    _sendNativeSMS(escalatedMessage);
+
+    _dispatchIncidentEmail(
+      incidentType: _detectedIncidentType,
+      severityText: text,
+      severityLevel: level,
+      triggerSource: "VOLUME_BUTTON_ESCALATION",
+      lat: pos?.latitude ?? 22.5726,
+      lng: pos?.longitude ?? 88.3639,
+      clickCount: clicks,
+    );
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("🚨 Priority Escalated: $text (Tier $level - $clicks presses)"),
+          backgroundColor: level == 3 ? Colors.red.shade900 : Colors.deepOrange,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    }
+  }
+
+  Future<void> _dispatchIncidentEmail({
+    required String incidentType,
+    required String severityText,
+    required int severityLevel,
+    required String triggerSource,
+    required double lat,
+    required double lng,
+    double? peakGForce,
+    double? speedKmh,
+    int? clickCount,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    String myName = prefs.getString('username') ?? "A Commuter";
+    String recipientEmail = prefs.getString('emergencyEmail') ?? "";
+
+    final emailPayload = {
+      'recipientEmail': recipientEmail.isNotEmpty ? recipientEmail : 'emergency-dispatch@safecommute.internal',
+      'username': myName,
+      'incidentType': incidentType,
+      'severityText': severityText,
+      'severityLevel': severityLevel,
+      'triggerSource': triggerSource,
+      'lat': lat,
+      'lng': lng,
+      'peakGForce': peakGForce,
+      'speedKmh': speedKmh,
+      'clickCount': clickCount ?? 3,
+      'timestamp': DateTime.now().toIso8601String(),
+    };
+
+    socket.emit('incident_email_dispatch', emailPayload);
+    debugPrint("[EMAIL DISPATCH] Automated Incident Email dispatched to relay server.");
   }
 
   Future<void> _syncSettingsToNative() async {
@@ -554,6 +861,13 @@ class DashboardScreenState extends State<DashboardScreen> {
       'batteryMetadata': batteryLevelVal,
       'timestamp': DateTime.now().toIso8601String(),
       'isLiveUpdate': false,
+      'incidentType': _detectedIncidentType,
+      'severityLevel': _currentSeverityLevel,
+      'severityText': _currentSeverityText,
+      'clickCount': _currentClicks,
+      'triggerSource': _triggerSource,
+      'peakGForce': _lastPeakGForce,
+      'speedKmh': _lastSpeedKmh,
     });
     debugPrint("[INSTANT SOS] Broadcast emitted in <20ms to all nearby responders!");
 
@@ -565,13 +879,31 @@ class DashboardScreenState extends State<DashboardScreen> {
 
     // 4. DISPATCH NATIVE SMS ASYNCHRONOUSLY (Non-blocking)
     String mapLink = "https://maps.google.com/?q=$initialLat,$initialLng";
-    String emergencyMessage = "$myName's EMERGENCY! I need help. My live location: $mapLink";
+    String emergencyMessage = _currentSeverityLevel == 3
+        ? "[CRITICAL - $_detectedIncidentType - $_currentClicks PRESSES] $myName in SEVERE DANGER! Live GPS: $mapLink"
+        : _currentSeverityLevel == 2
+            ? "[URGENT - $_detectedIncidentType - $_currentClicks PRESSES] $myName needs help! Live GPS: $mapLink"
+            : "$myName's EMERGENCY! I need help. My live location: $mapLink";
     _sendNativeSMS(emergencyMessage);
+
+    // 4b. DISPATCH AUTOMATED INCIDENT EMAIL REPORT
+    _dispatchIncidentEmail(
+      incidentType: _detectedIncidentType,
+      severityText: _currentSeverityText,
+      severityLevel: _currentSeverityLevel,
+      triggerSource: _triggerSource,
+      lat: initialLat,
+      lng: initialLng,
+      peakGForce: _lastPeakGForce,
+      speedKmh: _lastSpeedKmh,
+      clickCount: _currentClicks,
+    );
 
     // 5. ASYNC HIGH-ACCURACY GPS REFINEMENT & CONTINUOUS 4s STREAMING
     Geolocator.getCurrentPosition(
       locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
     ).then((pos) {
+      _accidentDetector?.updateSpeed(pos.speed);
       if (isSosActive && mounted) {
         setState(() {
           locationStatus = "Lat: ${pos.latitude.toStringAsFixed(4)}, Lng: ${pos.longitude.toStringAsFixed(4)}";
@@ -584,6 +916,11 @@ class DashboardScreenState extends State<DashboardScreen> {
           'batteryMetadata': batteryLevelVal,
           'timestamp': DateTime.now().toIso8601String(),
           'isLiveUpdate': true,
+          'incidentType': _detectedIncidentType,
+          'severityLevel': _currentSeverityLevel,
+          'severityText': _currentSeverityText,
+          'clickCount': _currentClicks,
+          'triggerSource': _triggerSource,
         });
       }
     }).catchError((_) {});
@@ -593,6 +930,7 @@ class DashboardScreenState extends State<DashboardScreen> {
         Position position = await Geolocator.getCurrentPosition(
           locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
         );
+        _accidentDetector?.updateSpeed(position.speed);
         if (mounted) {
           setState(() {
             locationStatus = "Lat: ${position.latitude.toStringAsFixed(4)}, Lng: ${position.longitude.toStringAsFixed(4)}";
@@ -612,6 +950,11 @@ class DashboardScreenState extends State<DashboardScreen> {
           'batteryMetadata': level,
           'timestamp': DateTime.now().toIso8601String(),
           'isLiveUpdate': true,
+          'incidentType': _detectedIncidentType,
+          'severityLevel': _currentSeverityLevel,
+          'severityText': _currentSeverityText,
+          'clickCount': _currentClicks,
+          'triggerSource': _triggerSource,
         });
       } catch (e) {
         if (mounted) {
@@ -630,6 +973,11 @@ class DashboardScreenState extends State<DashboardScreen> {
     _locationTimer?.cancel();
     setState(() {
       locationStatus = "GPS Ready";
+      _currentSeverityLevel = 1;
+      _currentSeverityText = "ELEVATED";
+      _currentClicks = 3;
+      _detectedIncidentType = "PANIC_SOS";
+      _triggerSource = "MANUAL_SOS";
     });
 
     // 3. Notify server and responders that emergency is resolved
@@ -641,9 +989,26 @@ class DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
-  void toggleSOS() async {
+  void toggleSOS({
+    int severityLevel = 1,
+    String severityText = "ELEVATED",
+    int clickCount = 3,
+    String triggerSource = "MANUAL_SOS",
+    String incidentType = "PANIC_SOS",
+    double? peakGForce,
+    double? speedKmh,
+  }) async {
     setState(() {
       isSosActive = !isSosActive;
+      if (isSosActive) {
+        _currentSeverityLevel = severityLevel;
+        _currentSeverityText = severityText;
+        _currentClicks = clickCount;
+        _triggerSource = triggerSource;
+        _detectedIncidentType = incidentType;
+        _lastPeakGForce = peakGForce;
+        _lastSpeedKmh = speedKmh;
+      }
     });
     
     if (isSosActive) {
@@ -658,6 +1023,8 @@ class DashboardScreenState extends State<DashboardScreen> {
     _audioPlayer.dispose();
     _locationTimer?.cancel();
     _shakeSubscription?.cancel();
+    _accidentDetector?.stop();
+    _backTapDetector?.stop();
     socket.dispose();
     super.dispose();
   }
@@ -729,7 +1096,7 @@ class DashboardScreenState extends State<DashboardScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            "🚨 SOS: ${_incomingDistressAlert!['username'] ?? 'Someone'} NEEDS HELP!",
+                            "🚨 [${_incomingDistressAlert!['severityText'] ?? 'CRITICAL'}]: ${_incomingDistressAlert!['username'] ?? 'Someone'} NEEDS HELP!",
                             style: const TextStyle(
                               color: Colors.white,
                               fontWeight: FontWeight.bold,
@@ -737,9 +1104,9 @@ class DashboardScreenState extends State<DashboardScreen> {
                             ),
                           ),
                           const SizedBox(height: 2),
-                          const Text(
-                            "Tap to switch to Responder Mode & navigate.",
-                            style: TextStyle(color: Colors.white70, fontSize: 11),
+                          Text(
+                            "${_incomingDistressAlert!['incidentType'] == 'VEHICLE_CRASH' ? '🚗 Vehicle Crash' : _incomingDistressAlert!['incidentType'] == 'HARD_FALL' ? '⚠️ Hard Fall' : _incomingDistressAlert!['incidentType'] == 'PHYSICAL_ASSAULT' ? '🚨 Violent Struggle' : '🆘 Emergency SOS'} • ${_incomingDistressAlert!['distanceText'] ?? 'Nearby'}",
+                            style: const TextStyle(color: Colors.white70, fontSize: 11),
                           ),
                         ],
                       ),
@@ -795,14 +1162,42 @@ class DashboardScreenState extends State<DashboardScreen> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Text(
-                      isSosActive ? "EMERGENCY ACTIVE" : "READY TO TRACK",
+                      isSosActive
+                          ? "🚨 TIER $_currentSeverityLevel: $_currentSeverityText"
+                          : "READY TO TRACK",
                       style: TextStyle(
                         color: isSosActive ? Colors.redAccent : Colors.black54,
-                        fontSize: 24,
+                        fontSize: 22,
                         fontWeight: FontWeight.bold,
-                        letterSpacing: 1.5,
+                        letterSpacing: 1.2,
                       ),
                     ),
+                    if (isSosActive) ...[
+                      const SizedBox(height: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: _currentSeverityLevel == 3
+                              ? Colors.red.shade900
+                              : _currentSeverityLevel == 2
+                                  ? Colors.orange.shade800
+                                  : Colors.red.shade700,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          _detectedIncidentType == "VEHICLE_CRASH"
+                              ? "🚗 Vehicle Crash Detected"
+                              : _detectedIncidentType == "HARD_FALL"
+                                  ? "⚠️ Hard Fall Detected"
+                                  : _detectedIncidentType == "PHYSICAL_ASSAULT"
+                                      ? "🚨 Struggle / Assault Detected"
+                                      : _detectedIncidentType == "BACK_TAP_SOS"
+                                          ? " iPhone Back Tap SOS"
+                                          : "🆘 Panic SOS ($_currentClicks Clicks)",
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                        ),
+                      ),
+                    ],
             const SizedBox(height: 50),
             
             // Pulsing SOS Button
@@ -914,7 +1309,7 @@ class DashboardScreenState extends State<DashboardScreen> {
                           border: Border.all(color: isSosActive ? Colors.redAccent : Colors.green.shade300),
                         ),
                         child: Text(
-                          isSosActive ? "STREAMING" : "ARMED",
+                          isSosActive ? "PRIORITY: $_currentSeverityText ($_currentClicks CLICKS)" : "ARMED",
                           style: TextStyle(
                             color: isSosActive ? Colors.white : Colors.green.shade800,
                             fontWeight: FontWeight.bold,
@@ -927,8 +1322,8 @@ class DashboardScreenState extends State<DashboardScreen> {
                   const SizedBox(height: 6),
                   Text(
                     isSosActive
-                        ? "Broadcasting live GPS telemetry & siren alarms to nearest responders within proximity radius. Silent SMS dispatched to your trusted contacts."
-                        : "Ready for immediate protection. Trigger via big SOS button, hardware volume key clicks in pocket, or automatic physical fall/shake detection.",
+                        ? "Broadcasting live GPS telemetry, incident classification ($_detectedIncidentType) & siren alarms to nearest responders. Emergency email & SMS dispatched."
+                        : "Ready for immediate protection. Trigger via big SOS button, volume clicks (3x-6x priority escalation),  iPhone Back Tap, or automatic vehicle crash & fall detection.",
                     style: TextStyle(
                       fontSize: 11,
                       color: isSosActive ? Colors.red.shade900 : Colors.black54,

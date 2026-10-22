@@ -22,6 +22,11 @@ class VictimAlert {
   final double lng;
   final String battery;
   final DateTime lastUpdated;
+  final String incidentType;
+  final int severityLevel;
+  final String severityText;
+  final int clickCount;
+  final String triggerSource;
 
   VictimAlert({
     required this.username,
@@ -29,6 +34,11 @@ class VictimAlert {
     required this.lng,
     required this.battery,
     required this.lastUpdated,
+    this.incidentType = "PANIC_SOS",
+    this.severityLevel = 1,
+    this.severityText = "ELEVATED",
+    this.clickCount = 3,
+    this.triggerSource = "MANUAL_SOS",
   });
 }
 
@@ -326,6 +336,11 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
         String username = payload['username'] ?? "Commuter in Distress";
         String battery = payload['batteryMetadata']?.toString() ?? "??";
         bool isLiveUpdate = payload['isLiveUpdate'] == true;
+        String incidentType = payload['incidentType']?.toString() ?? "PANIC_SOS";
+        int severityLevel = payload['severityLevel'] is int ? payload['severityLevel'] : 1;
+        String severityText = payload['severityText']?.toString() ?? "ELEVATED";
+        int clickCount = payload['clickCount'] is int ? payload['clickCount'] : 3;
+        String triggerSource = payload['triggerSource']?.toString() ?? "MANUAL_SOS";
 
         LatLng victimPos = LatLng(lat, lng);
         bool isBrandNewAlert = !_activeAlerts.containsKey(username);
@@ -337,15 +352,28 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
             lng: lng,
             battery: battery,
             lastUpdated: DateTime.now(),
+            incidentType: incidentType,
+            severityLevel: severityLevel,
+            severityText: severityText,
+            clickCount: clickCount,
+            triggerSource: triggerSource,
           );
           _selectedVictimUsername ??= username;
-          _statusText = "🚨 ${_activeAlerts.length} Active Emergency";
+          _statusText = "🚨 ${_activeAlerts.length} Active Emergency ($severityText)";
         });
 
-        // Trigger notification & loud siren ONLY on initial alert,
+        // Trigger notification & loud siren ONLY on initial alert or escalation,
         // and ONLY if not silenced by the user, and NEVER on continuous 4s live streaming updates!
         if (isBrandNewAlert && !isLiveUpdate && !_silencedVictims.contains(username) && !_isAlertsSilenced) {
-          _handleNewEmergencyAlert(username, lat, lng);
+          _handleNewEmergencyAlert(
+            username,
+            lat,
+            lng,
+            incidentType: incidentType,
+            severityLevel: severityLevel,
+            severityText: severityText,
+            clickCount: clickCount,
+          );
         }
 
         // If auto-follow is on and this is the active victim, smoothly track position
@@ -393,7 +421,15 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
     });
   }
 
-  Future<void> _handleNewEmergencyAlert(String username, double lat, double lng) async {
+  Future<void> _handleNewEmergencyAlert(
+    String username,
+    double lat,
+    double lng, {
+    String incidentType = "PANIC_SOS",
+    int severityLevel = 1,
+    String severityText = "ELEVATED",
+    int clickCount = 3,
+  }) async {
     // 0. Proximity Geofenced Filter: Only nearest responders are alerted with full siren & alarm!
     final prefs = await SharedPreferences.getInstance();
     double radiusKm = prefs.getDouble('alertRadiusKm') ?? 5.0; // Default 5 km
@@ -442,11 +478,17 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
         ? (distanceMeters < 1000 ? "${distanceMeters.round()} m away" : "${(distanceMeters / 1000).toStringAsFixed(1)} km away")
         : "nearby";
 
+    String incidentLabel = "🚨 SOS ALERT";
+    if (incidentType == "VEHICLE_CRASH") incidentLabel = "🚗💥 VEHICLE CRASH";
+    if (incidentType == "HARD_FALL") incidentLabel = "⚠️🤕 HARD FALL";
+    if (incidentType == "PHYSICAL_ASSAULT") incidentLabel = "🚨🥊 ASSAULT STRUGGLE";
+    if (incidentType == "BACK_TAP_SOS") incidentLabel = " BACK TAP SOS";
+
     // 1. Native Android Heads-Up Notification & Heavy Vibration for Nearest Responders
     try {
       await _volumeChannel.invokeMethod('showEmergencyNotification', {
-        'title': "🚨 SOS ALERT: $username NEEDS HELP!",
-        'body': "$username is in danger ($distDesc)! Tap to view Live GPS Radar.",
+        'title': "$incidentLabel: $username NEEDS HELP! [$severityText]",
+        'body': "$username is in danger ($distDesc)! Severity Tier $severityLevel. Tap to view Live GPS Radar.",
         'victimId': username,
       });
     } catch (_) {}
@@ -471,7 +513,15 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
 
     // 5. In-App High-Visibility Alert Dialog
     if (mounted) {
-      _showEmergencyModal(username, lat, lng);
+      _showEmergencyModal(
+        username,
+        lat,
+        lng,
+        incidentType: incidentType,
+        severityLevel: severityLevel,
+        severityText: severityText,
+        clickCount: clickCount,
+      );
     }
   }
 
@@ -514,11 +564,25 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
     if (mounted) setState(() {});
   }
 
-  void _showEmergencyModal(String username, double lat, double lng) {
+  void _showEmergencyModal(
+    String username,
+    double lat,
+    double lng, {
+    String incidentType = "PANIC_SOS",
+    int severityLevel = 1,
+    String severityText = "ELEVATED",
+    int clickCount = 3,
+  }) {
     showDialog(
       context: context,
       barrierDismissible: true,
       builder: (ctx) {
+        String incidentLabel = "🚨 Critical Emergency";
+        if (incidentType == "VEHICLE_CRASH") incidentLabel = "🚗 Crash / Collision";
+        if (incidentType == "HARD_FALL") incidentLabel = "⚠️ Hard Fall Accident";
+        if (incidentType == "PHYSICAL_ASSAULT") incidentLabel = "🚨 Physical Assault";
+        if (incidentType == "BACK_TAP_SOS") incidentLabel = " iPhone Back Tap SOS";
+
         return AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
           backgroundColor: Colors.white,
@@ -529,16 +593,33 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
               Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                  color: Colors.red.shade100,
+                  color: severityLevel == 3 ? Colors.red.shade900 : Colors.red.shade100,
                   shape: BoxShape.circle,
                 ),
-                child: const Icon(Icons.warning_amber_rounded, color: Colors.redAccent, size: 28),
+                child: Icon(
+                  severityLevel == 3 ? Icons.crisis_alert : Icons.warning_amber_rounded,
+                  color: severityLevel == 3 ? Colors.white : Colors.redAccent,
+                  size: 28,
+                ),
               ),
               const SizedBox(width: 12),
-              const Expanded(
-                child: Text(
-                  "🚨 CRITICAL SOS!",
-                  style: TextStyle(fontWeight: FontWeight.w900, color: Colors.redAccent, fontSize: 18),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      severityLevel == 3 ? "🔴 LEVEL 3: CRITICAL" : "🚨 EMERGENCY SOS",
+                      style: TextStyle(
+                        fontWeight: FontWeight.w900,
+                        color: severityLevel == 3 ? Colors.red.shade900 : Colors.redAccent,
+                        fontSize: 16,
+                      ),
+                    ),
+                    Text(
+                      "Priority Tier $severityLevel ($severityText)",
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.black54),
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -548,8 +629,46 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                "$username triggered an urgent SOS alert!",
+                "$username triggered an urgent alert!",
                 style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: severityLevel == 3 ? Colors.red.shade50 : Colors.blue.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: severityLevel == 3 ? Colors.red.shade300 : Colors.blue.shade200,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      incidentType == "VEHICLE_CRASH"
+                          ? Icons.car_crash
+                          : incidentType == "HARD_FALL"
+                              ? Icons.personal_injury
+                              : incidentType == "PHYSICAL_ASSAULT"
+                                  ? Icons.front_hand
+                                  : Icons.emergency,
+                      size: 16,
+                      color: severityLevel == 3 ? Colors.red.shade900 : Colors.blue.shade900,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        "$incidentLabel ($clickCount volume clicks)",
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: severityLevel == 3 ? Colors.red.shade900 : Colors.blue.shade900,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
               const SizedBox(height: 8),
               Text(
@@ -558,7 +677,7 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
               ),
               const SizedBox(height: 6),
               const Text(
-                "Real-time GPS coordinates are streaming. Immediate response is required.",
+                "Real-time GPS telemetry is streaming. Immediate response is required.",
                 style: TextStyle(fontSize: 13, color: Colors.black54),
               ),
               const SizedBox(height: 20),
@@ -1389,6 +1508,63 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
                                             style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.green),
                                           ),
                                         ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 4),
+                                Wrap(
+                                  spacing: 5,
+                                  runSpacing: 3,
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                      decoration: BoxDecoration(
+                                        color: currentVictim.severityLevel == 3
+                                            ? Colors.red.shade100
+                                            : currentVictim.severityLevel == 2
+                                                ? Colors.orange.shade100
+                                                : Colors.blue.shade50,
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: Text(
+                                        currentVictim.incidentType == "VEHICLE_CRASH"
+                                            ? "🚗 Crash"
+                                            : currentVictim.incidentType == "HARD_FALL"
+                                                ? "⚠️ Fall"
+                                                : currentVictim.incidentType == "PHYSICAL_ASSAULT"
+                                                    ? "🥊 Struggle"
+                                                    : currentVictim.incidentType == "BACK_TAP_SOS"
+                                                        ? " Back Tap"
+                                                        : "🆘 SOS (${currentVictim.clickCount}x)",
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                          color: currentVictim.severityLevel == 3
+                                              ? Colors.red.shade900
+                                              : currentVictim.severityLevel == 2
+                                                  ? Colors.orange.shade900
+                                                  : Colors.blue.shade900,
+                                        ),
+                                      ),
+                                    ),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                      decoration: BoxDecoration(
+                                        color: currentVictim.severityLevel == 3
+                                            ? Colors.red.shade900
+                                            : currentVictim.severityLevel == 2
+                                                ? Colors.orange.shade800
+                                                : Colors.blueGrey.shade700,
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: Text(
+                                        "TIER ${currentVictim.severityLevel}: ${currentVictim.severityText}",
+                                        style: const TextStyle(
+                                          fontSize: 9,
+                                          fontWeight: FontWeight.w900,
+                                          color: Colors.white,
+                                        ),
                                       ),
                                     ),
                                   ],
