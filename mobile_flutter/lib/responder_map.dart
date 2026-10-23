@@ -114,6 +114,15 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
         bool volumeTriggerEnabled = prefs.getBool('volumeTriggerEnabled') ?? true;
         if (!volumeTriggerEnabled) return;
         _triggerResponderEmergencyDistress();
+      } else if (call.method == "autoPlayVoiceNote") {
+        String? victim = call.arguments as String?;
+        final target = victim ?? _selectedVictimUsername;
+        if (target != null && _activeAlerts.containsKey(target)) {
+          final b64 = _activeAlerts[target]?.voiceNoteBase64;
+          if (b64 != null) {
+            _playVictimVoiceNote(b64);
+          }
+        }
       } else if (call.method == "onVolumePressed") {
         String direction = call.arguments as String? ?? "down";
 
@@ -353,9 +362,9 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
         String severityText = payload['severityText']?.toString() ?? "ELEVATED";
         int clickCount = payload['clickCount'] is int ? payload['clickCount'] : 3;
         String triggerSource = payload['triggerSource']?.toString() ?? "MANUAL_SOS";
-        bool hasVoiceNote = payload['hasVoiceNote'] == true;
-        String? voiceNoteBase64 = payload['voiceNoteBase64']?.toString();
-        int voiceNoteDuration = (payload['voiceNoteDuration'] as num?)?.toInt() ?? 0;
+        bool hasVoiceNote = payload['hasVoiceNote'] == true || (_activeAlerts[username]?.hasVoiceNote == true);
+        String? voiceNoteBase64 = payload['voiceNoteBase64']?.toString() ?? _activeAlerts[username]?.voiceNoteBase64;
+        int voiceNoteDuration = (payload['voiceNoteDuration'] as num?)?.toInt() ?? (_activeAlerts[username]?.voiceNoteDuration ?? 0);
 
         if (!isLiveUpdate) {
           _silencedVictims.remove(username);
@@ -408,6 +417,58 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
           try {
             _mapController.move(victimPos, _mapController.camera.zoom);
           } catch (_) {}
+        }
+      }
+    });
+
+    // Real-time Dedicated Emergency Voice Message from Commuter
+    socket.on('emergency_voice_note', (payload) async {
+      if (mounted) {
+        String username = payload['username'] ?? "Commuter in Distress";
+        String? b64 = payload['voiceNoteBase64']?.toString();
+        int duration = (payload['voiceNoteDuration'] as num?)?.toInt() ?? 0;
+
+        if (b64 != null && b64.isNotEmpty) {
+          setState(() {
+            if (_activeAlerts.containsKey(username)) {
+              final old = _activeAlerts[username]!;
+              _activeAlerts[username] = VictimAlert(
+                username: old.username,
+                lat: old.lat,
+                lng: old.lng,
+                battery: old.battery,
+                lastUpdated: DateTime.now(),
+                incidentType: old.incidentType,
+                severityLevel: old.severityLevel,
+                severityText: old.severityText,
+                clickCount: old.clickCount,
+                triggerSource: old.triggerSource,
+                hasVoiceNote: true,
+                voiceNoteBase64: b64,
+                voiceNoteDuration: duration,
+              );
+            }
+            _selectedVictimUsername ??= username;
+          });
+
+          // Un-silence so the responder hears the new voice message
+          _silencedVictims.remove(username);
+          _isAlertsSilenced = false;
+
+          // Native Android Notification with Listen to Voice Action
+          try {
+            await _volumeChannel.invokeMethod('showEmergencyNotification', {
+              'title': "🎙️ EMERGENCY VOICE: $username Sent Audio!",
+              'body': "$username recorded an explanation ($duration s). Tap to listen now!",
+              'victimId': username,
+              'hasVoiceNote': true,
+            });
+          } catch (_) {}
+
+          HapticFeedback.heavyImpact();
+
+          // Auto-play the voice message so responder immediately hears it!
+          _playVictimVoiceNote(b64);
         }
       }
     });
@@ -1249,94 +1310,151 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
               ),
             ),
 
-          // Active Siren Mute Bar or Peace Mode Status
-          if (_isAlarmPlaying || (_activeAlerts.isNotEmpty && !_isAlertsSilenced))
+          // Top Emergency Control & Voice Message Panel
+          if (_activeAlerts.isNotEmpty)
             Positioned(
-              top: _activeAlerts.length > 1 ? 60 : 14,
+              top: _activeAlerts.length > 1 ? 58 : 12,
               left: 14,
               right: 14,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                decoration: BoxDecoration(
-                  color: Colors.red.shade900,
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: const [
-                    BoxShadow(color: Colors.redAccent, blurRadius: 10, spreadRadius: 1),
-                  ],
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.campaign, color: Colors.white, size: 24),
-                    const SizedBox(width: 8),
-                    const Expanded(
-                      child: Text(
-                        "🚨 SOS ALARM RINGING",
-                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 13),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // 1. Active Siren Mute Bar or Peace Mode Status
+                  if (_isAlarmPlaying || (!_isAlertsSilenced))
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade900,
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: const [
+                          BoxShadow(color: Colors.redAccent, blurRadius: 10, spreadRadius: 1),
+                        ],
                       ),
-                    ),
-                    ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.white,
-                        foregroundColor: Colors.red.shade900,
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                        minimumSize: Size.zero,
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                      ),
-                      icon: const Icon(Icons.volume_off, size: 16, color: Colors.red),
-                      label: const Text(
-                        "STOP ALARM",
-                        style: TextStyle(fontWeight: FontWeight.w900, fontSize: 12),
-                      ),
-                      onPressed: () => _muteAlarm(),
-                    ),
-                  ],
-                ),
-              ),
-            )
-          else if (_isAlertsSilenced && _activeAlerts.isNotEmpty)
-            Positioned(
-              top: _activeAlerts.length > 1 ? 60 : 14,
-              left: 20,
-              right: 20,
-              child: Center(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: Colors.black87,
-                    borderRadius: BorderRadius.circular(20),
-                    boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4)],
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.volume_off, color: Colors.greenAccent, size: 16),
-                      const SizedBox(width: 8),
-                      Text(
-                        "Alerts Off • Searching ${_activeAlerts.length} Incident in Peace",
-                        style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
-                      ),
-                      const SizedBox(width: 8),
-                      GestureDetector(
-                        onTap: () {
-                          setState(() {
-                            _isAlertsSilenced = false;
-                            _silencedVictims.clear();
-                          });
-                        },
-                        child: const Text(
-                          "UNMUTE",
-                          style: TextStyle(
-                            color: Colors.greenAccent,
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold,
-                            decoration: TextDecoration.underline,
+                      child: Row(
+                        children: [
+                          const Icon(Icons.campaign, color: Colors.white, size: 24),
+                          const SizedBox(width: 8),
+                          const Expanded(
+                            child: Text(
+                              "🚨 SOS ALARM RINGING",
+                              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 13),
+                            ),
                           ),
+                          ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.white,
+                              foregroundColor: Colors.red.shade900,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                            ),
+                            icon: const Icon(Icons.volume_off, size: 16, color: Colors.red),
+                            label: const Text(
+                              "STOP ALARM",
+                              style: TextStyle(fontWeight: FontWeight.w900, fontSize: 12),
+                            ),
+                            onPressed: () => _muteAlarm(),
+                          ),
+                        ],
+                      ),
+                    )
+                  else if (_isAlertsSilenced)
+                    Center(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.black87,
+                          borderRadius: BorderRadius.circular(20),
+                          boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4)],
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.volume_off, color: Colors.greenAccent, size: 16),
+                            const SizedBox(width: 8),
+                            Text(
+                              "Alerts Off • Searching ${_activeAlerts.length} Incident in Peace",
+                              style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
+                            ),
+                            const SizedBox(width: 8),
+                            GestureDetector(
+                              onTap: () {
+                                setState(() {
+                                  _isAlertsSilenced = false;
+                                  _silencedVictims.clear();
+                                });
+                              },
+                              child: const Text(
+                                "UNMUTE",
+                                style: TextStyle(
+                                  color: Colors.greenAccent,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                  decoration: TextDecoration.underline,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                    ],
-                  ),
-                ),
+                    ),
+
+                  // 2. High-Visibility Floating Emergency Voice Message Banner
+                  if (currentVictim != null && currentVictim.hasVoiceNote && currentVictim.voiceNoteBase64 != null) ...[
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(colors: [Colors.amber.shade800, Colors.orange.shade900]),
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.orange.withValues(alpha: 0.4),
+                            blurRadius: 8,
+                            offset: const Offset(0, 3),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(_isPlayingVoice ? Icons.graphic_eq : Icons.record_voice_over, color: Colors.white, size: 22),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  "🎙️ ${currentVictim.username.toUpperCase()}'S VOICE NOTE (${currentVictim.voiceNoteDuration}s)",
+                                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 12),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                const Text(
+                                  "Victim recorded an explanation. Tap to listen.",
+                                  style: TextStyle(color: Colors.white70, fontSize: 10),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.white,
+                              foregroundColor: Colors.orange.shade900,
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                            ),
+                            icon: Icon(_isPlayingVoice ? Icons.stop : Icons.play_arrow, size: 16),
+                            label: Text(_isPlayingVoice ? "STOP" : "PLAY", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11)),
+                            onPressed: () => _playVictimVoiceNote(currentVictim.voiceNoteBase64!),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ),
 

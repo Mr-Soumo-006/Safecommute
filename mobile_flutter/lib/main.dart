@@ -220,6 +220,9 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
   int _lastVoiceDurationSec = 0;
   final AudioPlayer _voicePlayer = AudioPlayer();
   bool _isPlayingVoiceNote = false;
+  bool _isSosVoiceRecording = false;
+  int _sosVoiceSecondsLeft = 15;
+  Timer? _sosVoiceTimer;
 
   MobileAccidentDetector? _accidentDetector;
   BackTapDetector? _backTapDetector;
@@ -890,6 +893,11 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
     if (await Permission.sms.isDenied) {
       await Permission.sms.request();
     }
+
+    // 3. Request Microphone Permission Upfront for Voice Messages
+    if (await Permission.microphone.isDenied) {
+      await Permission.microphone.request();
+    }
   }
 
   Future<void> _initBattery() async {
@@ -990,8 +998,54 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
             'title': "$incident: $victimName NEEDS HELP!",
             'body': "$victimName triggered emergency SOS ($dist)$voiceNotice! Tap to view Live GPS Radar.",
             'victimId': victimName,
+            'hasVoiceNote': alertData['hasVoiceNote'] == true,
           });
         } catch (_) {}
+      }
+    });
+
+    // Dedicated Emergency Voice Message from another Commuter
+    socket.on('emergency_voice_note', (payload) async {
+      if (!isSosActive && mounted) {
+        final alertData = payload is Map<String, dynamic>
+            ? payload
+            : Map<String, dynamic>.from(payload as Map);
+
+        final String victimName = alertData['username']?.toString() ?? "Someone";
+        final int duration = (alertData['voiceNoteDuration'] as num?)?.toInt() ?? 0;
+        final String? b64 = alertData['voiceNoteBase64']?.toString();
+
+        _silencedVictims.remove(victimName);
+        setState(() {
+          if (_incomingDistressAlert != null && _incomingDistressAlert!['username'] == victimName) {
+            _incomingDistressAlert!['hasVoiceNote'] = true;
+            _incomingDistressAlert!['voiceNoteBase64'] = b64;
+            _incomingDistressAlert!['voiceNoteDuration'] = duration;
+          } else {
+            _incomingDistressAlert = {
+              ...alertData,
+              'hasVoiceNote': true,
+              'voiceNoteBase64': b64,
+              'voiceNoteDuration': duration,
+              'distanceText': "Nearest Dispatch",
+            };
+          }
+        });
+
+        HapticFeedback.heavyImpact();
+
+        try {
+          await _volumeChannel.invokeMethod('showEmergencyNotification', {
+            'title': "🎙️ EMERGENCY VOICE: $victimName Sent Audio!",
+            'body': "$victimName recorded an emergency voice note ($duration s). Tap to listen now!",
+            'victimId': victimName,
+            'hasVoiceNote': true,
+          });
+        } catch (_) {}
+
+        if (b64 != null && b64.isNotEmpty) {
+          _playVictimVoiceNote(b64);
+        }
       }
     });
 
@@ -1117,6 +1171,136 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
     } catch (_) {
       if (mounted) setState(() => _isPlayingVoiceNote = false);
     }
+  }
+
+  Future<void> _startSosVoiceMessageRecording() async {
+    try {
+      await Permission.microphone.request();
+      final started = await _volumeChannel.invokeMethod('startVoiceRecording') ?? false;
+      if (started == true) {
+        setState(() {
+          _isSosVoiceRecording = true;
+          _sosVoiceSecondsLeft = 15;
+        });
+        HapticFeedback.mediumImpact();
+        _sosVoiceTimer?.cancel();
+        _sosVoiceTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+          if (_sosVoiceSecondsLeft > 1) {
+            setState(() => _sosVoiceSecondsLeft--);
+          } else {
+            timer.cancel();
+            _stopAndSendSosVoiceMessage();
+          }
+        });
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("Microphone permission required to record emergency audio."),
+              backgroundColor: Colors.redAccent,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint("Failed to start SOS voice recording: $e");
+    }
+  }
+
+  Future<void> _stopAndSendSosVoiceMessage() async {
+    _sosVoiceTimer?.cancel();
+    _sosVoiceTimer = null;
+    try {
+      final dynamic res = await _volumeChannel.invokeMethod('stopVoiceRecording');
+      if (res is Map && res['success'] == true) {
+        final b64 = res['base64']?.toString();
+        final duration = (res['durationSec'] as num?)?.toInt() ?? 15;
+
+        if (b64 != null && b64.isNotEmpty) {
+          setState(() {
+            _isSosVoiceRecording = false;
+            _lastVoiceNoteBase64 = b64;
+            _lastVoiceDurationSec = duration;
+          });
+
+          final prefs = await SharedPreferences.getInstance();
+          String myName = prefs.getString('username') ?? "A Commuter";
+          if (myName.trim().isEmpty) myName = "A Commuter";
+
+          Position? currentPos;
+          try {
+            currentPos = await Geolocator.getLastKnownPosition();
+          } catch (_) {}
+
+          double lat = currentPos?.latitude ?? 22.5726;
+          double lng = currentPos?.longitude ?? 88.3639;
+
+          // Instant socket dispatch of voice note to all responders
+          socket.emit('emergency_voice_note', {
+            'username': myName,
+            'voiceNoteBase64': b64,
+            'voiceNoteDuration': duration,
+            'lat': lat,
+            'lng': lng,
+            'batteryMetadata': batteryLevel,
+            'incidentType': _detectedIncidentType,
+            'severityLevel': _currentSeverityLevel,
+            'severityText': _currentSeverityText,
+            'clickCount': _currentClicks,
+            'triggerSource': _triggerSource,
+            'timestamp': DateTime.now().toIso8601String(),
+          });
+
+          // If SOS is not active yet, arm SOS Tier 2 with voice note
+          if (!isSosActive) {
+            toggleSOS(
+              severityLevel: 2,
+              severityText: "URGENT",
+              triggerSource: "VOICE_SOS",
+              incidentType: "VOICE_SOS",
+              voiceBase64: b64,
+              voiceDurationSec: duration,
+            );
+          }
+
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                backgroundColor: Colors.green.shade800,
+                content: Row(
+                  children: [
+                    const Icon(Icons.check_circle, color: Colors.white, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text("🎙️ Emergency Voice Message (${duration}s) sent to all responders!"),
+                    ),
+                  ],
+                ),
+                duration: const Duration(seconds: 4),
+              ),
+            );
+          }
+        } else {
+          setState(() => _isSosVoiceRecording = false);
+        }
+      } else {
+        setState(() => _isSosVoiceRecording = false);
+      }
+    } catch (e) {
+      setState(() => _isSosVoiceRecording = false);
+      debugPrint("Failed to stop voice recording: $e");
+    }
+  }
+
+  Future<void> _cancelSosVoiceMessage() async {
+    _sosVoiceTimer?.cancel();
+    _sosVoiceTimer = null;
+    try {
+      await _volumeChannel.invokeMethod('stopVoiceRecording');
+    } catch (_) {}
+    setState(() {
+      _isSosVoiceRecording = false;
+    });
   }
 
   Future<void> _sendNativeSMS(String message) async {
@@ -1252,6 +1436,9 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
           'severityText': _currentSeverityText,
           'clickCount': _currentClicks,
           'triggerSource': _triggerSource,
+          'hasVoiceNote': _lastVoiceNoteBase64 != null && _lastVoiceNoteBase64!.isNotEmpty,
+          'voiceNoteBase64': _lastVoiceNoteBase64,
+          'voiceNoteDuration': _lastVoiceDurationSec,
         });
       }
     }).catchError((_) {});
@@ -1286,6 +1473,9 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
           'severityText': _currentSeverityText,
           'clickCount': _currentClicks,
           'triggerSource': _triggerSource,
+          'hasVoiceNote': _lastVoiceNoteBase64 != null && _lastVoiceNoteBase64!.isNotEmpty,
+          'voiceNoteBase64': _lastVoiceNoteBase64,
+          'voiceNoteDuration': _lastVoiceDurationSec,
         });
       } catch (e) {
         if (mounted) {
@@ -1300,8 +1490,12 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
   Future<void> _stopActiveDefense() async {
     // 1. Stop Siren
     await _audioPlayer.stop();
-    // 2. Stop Tracking
+    // 2. Stop Tracking & Voice Recording
     _locationTimer?.cancel();
+    _sosVoiceTimer?.cancel();
+    if (_isSosVoiceRecording) {
+      try { await _volumeChannel.invokeMethod('stopVoiceRecording'); } catch (_) {}
+    }
     setState(() {
       locationStatus = "GPS Ready";
       _currentSeverityLevel = 1;
@@ -1309,6 +1503,9 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
       _currentClicks = 3;
       _detectedIncidentType = "PANIC_SOS";
       _triggerSource = "MANUAL_SOS";
+      _isSosVoiceRecording = false;
+      _lastVoiceNoteBase64 = null;
+      _lastVoiceDurationSec = 0;
     });
 
     // 3. Notify server and responders that emergency is resolved
@@ -1513,189 +1710,374 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
               ),
 
             Expanded(
-              child: Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      isSosActive
-                          ? "🚨 TIER $_currentSeverityLevel: $_currentSeverityText"
-                          : "READY TO TRACK",
-                      style: TextStyle(
-                        color: isSosActive ? Colors.redAccent : Colors.black54,
-                        fontSize: 22,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 1.2,
+              child: SingleChildScrollView(
+                physics: const BouncingScrollPhysics(),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8.0),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        isSosActive
+                            ? "🚨 TIER $_currentSeverityLevel: $_currentSeverityText"
+                            : "READY TO TRACK",
+                        style: TextStyle(
+                          color: isSosActive ? Colors.redAccent : Colors.black54,
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 1.2,
+                        ),
                       ),
-                    ),
-                    if (isSosActive) ...[
-                      const SizedBox(height: 6),
+                      if (isSosActive) ...[
+                        const SizedBox(height: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: _currentSeverityLevel == 3
+                                ? Colors.red.shade900
+                                : _currentSeverityLevel == 2
+                                    ? Colors.orange.shade800
+                                    : Colors.red.shade700,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text(
+                            _detectedIncidentType == "VEHICLE_CRASH"
+                                ? "🚗 Vehicle Crash Detected"
+                                : _detectedIncidentType == "HARD_FALL"
+                                    ? "⚠️ Hard Fall Detected"
+                                    : _detectedIncidentType == "PHYSICAL_ASSAULT"
+                                        ? "🚨 Struggle / Assault Detected"
+                                        : _detectedIncidentType == "BACK_TAP_SOS"
+                                            ? " iPhone Back Tap SOS"
+                                            : "🆘 Panic SOS ($_currentClicks Clicks)",
+                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 30),
+
+                      // Pulsing SOS Button
+                      GestureDetector(
+                        onTap: toggleSOS,
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 300),
+                          height: 200,
+                          width: 200,
+                          decoration: BoxDecoration(
+                            color: isSosActive ? Colors.red[800] : const Color(0xFFE53935),
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: isSosActive ? Colors.red.withValues(alpha: 0.9) : Colors.red.withValues(alpha: 0.3),
+                                blurRadius: isSosActive ? 50 : 20,
+                                spreadRadius: isSosActive ? 15 : 5,
+                              )
+                            ],
+                          ),
+                          child: Center(
+                            child: Text(
+                              isSosActive ? "CANCEL" : "SOS",
+                              style: const TextStyle(
+                                fontSize: 44,
+                                fontWeight: FontWeight.w900,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+
+                      const SizedBox(height: 24),
+
+                      // Dedicated Emergency Voice Message Card
+                      _buildEmergencyVoiceCard(),
+
+                      const SizedBox(height: 20),
+
+                      // Telemetry Readouts
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                        padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
-                          color: _currentSeverityLevel == 3
-                              ? Colors.red.shade900
-                              : _currentSeverityLevel == 2
-                                  ? Colors.orange.shade800
-                                  : Colors.red.shade700,
+                          color: Colors.white,
                           borderRadius: BorderRadius.circular(12),
+                          boxShadow: [
+                            BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, spreadRadius: 2)
+                          ]
                         ),
-                        child: Text(
-                          _detectedIncidentType == "VEHICLE_CRASH"
-                              ? "🚗 Vehicle Crash Detected"
-                              : _detectedIncidentType == "HARD_FALL"
-                                  ? "⚠️ Hard Fall Detected"
-                                  : _detectedIncidentType == "PHYSICAL_ASSAULT"
-                                      ? "🚨 Struggle / Assault Detected"
-                                      : _detectedIncidentType == "BACK_TAP_SOS"
-                                          ? " iPhone Back Tap SOS"
-                                          : "🆘 Panic SOS ($_currentClicks Clicks)",
-                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
-                        ),
-                      ),
-                    ],
-            const SizedBox(height: 50),
-            
-            // Pulsing SOS Button
-            GestureDetector(
-              onTap: toggleSOS,
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 300),
-                height: 220,
-                width: 220,
-                decoration: BoxDecoration(
-                  color: isSosActive ? Colors.red[800] : const Color(0xFFE53935),
-                  shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(
-                      color: isSosActive ? Colors.red.withValues(alpha: 0.9) : Colors.red.withValues(alpha: 0.3),
-                      blurRadius: isSosActive ? 50 : 20,
-                      spreadRadius: isSosActive ? 15 : 5,
-                    )
-                  ],
-                ),
-                child: Center(
-                  child: Text(
-                    isSosActive ? "CANCEL" : "SOS",
-                    style: const TextStyle(
-                      fontSize: 48,
-                      fontWeight: FontWeight.w900,
-                      color: Colors.white,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            
-            const SizedBox(height: 60),
-            
-            // Telemetry Readouts
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                boxShadow: [
-                  BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, spreadRadius: 2)
-                ]
-              ),
-              child: Column(
-                children: [
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.battery_charging_full, color: Colors.green, size: 20),
-                      const SizedBox(width: 8),
-                      Text("Battery Level: $batteryLevel", style: const TextStyle(color: Colors.black87, fontSize: 16, fontWeight: FontWeight.w500)),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.location_on, color: isSosActive ? Colors.redAccent : Colors.blueAccent, size: 20),
-                      const SizedBox(width: 8),
-                      Text(locationStatus, style: const TextStyle(color: Colors.black87, fontSize: 16, fontWeight: FontWeight.w500)),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 18),
-            // SafeCommute Active Shield Status Card
-            Container(
-              margin: const EdgeInsets.symmetric(horizontal: 20),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-              decoration: BoxDecoration(
-                color: isSosActive ? Colors.red.shade50 : Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: isSosActive ? Colors.redAccent : Colors.green.shade200,
-                  width: isSosActive ? 1.5 : 1.0,
-                ),
-                boxShadow: [
-                  BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 8, offset: const Offset(0, 2)),
-                ],
-              ),
-              child: Column(
-                children: [
-                  Row(
-                    children: [
-                      Icon(
-                        isSosActive ? Icons.crisis_alert : Icons.verified_user,
-                        color: isSosActive ? Colors.redAccent : Colors.green,
-                        size: 22,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          isSosActive ? "EMERGENCY BROADCAST ACTIVE" : "SafeCommute Active Defense",
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 13,
-                            color: isSosActive ? Colors.red.shade900 : Colors.black87,
-                          ),
+                        child: Column(
+                          children: [
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(Icons.battery_charging_full, color: Colors.green, size: 20),
+                                const SizedBox(width: 8),
+                                Text("Battery Level: $batteryLevel", style: const TextStyle(color: Colors.black87, fontSize: 16, fontWeight: FontWeight.w500)),
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.location_on, color: isSosActive ? Colors.redAccent : Colors.blueAccent, size: 20),
+                                const SizedBox(width: 8),
+                                Text(locationStatus, style: const TextStyle(color: Colors.black87, fontSize: 16, fontWeight: FontWeight.w500)),
+                              ],
+                            ),
+                          ],
                         ),
                       ),
+                      const SizedBox(height: 18),
+                      // SafeCommute Active Shield Status Card
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                        margin: const EdgeInsets.symmetric(horizontal: 20),
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                         decoration: BoxDecoration(
-                          color: isSosActive ? Colors.redAccent : Colors.green.shade50,
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(color: isSosActive ? Colors.redAccent : Colors.green.shade300),
-                        ),
-                        child: Text(
-                          isSosActive ? "PRIORITY: $_currentSeverityText ($_currentClicks CLICKS)" : "ARMED",
-                          style: TextStyle(
-                            color: isSosActive ? Colors.white : Colors.green.shade800,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 10,
+                          color: isSosActive ? Colors.red.shade50 : Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: isSosActive ? Colors.redAccent : Colors.green.shade200,
+                            width: isSosActive ? 1.5 : 1.0,
                           ),
+                          boxShadow: [
+                            BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 8, offset: const Offset(0, 2)),
+                          ],
+                        ),
+                        child: Column(
+                          children: [
+                            Row(
+                              children: [
+                                Icon(
+                                  isSosActive ? Icons.crisis_alert : Icons.verified_user,
+                                  color: isSosActive ? Colors.redAccent : Colors.green,
+                                  size: 22,
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    isSosActive ? "EMERGENCY BROADCAST ACTIVE" : "SafeCommute Active Defense",
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 13,
+                                      color: isSosActive ? Colors.red.shade900 : Colors.black87,
+                                    ),
+                                  ),
+                                ),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: isSosActive ? Colors.redAccent : Colors.green.shade50,
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(color: isSosActive ? Colors.redAccent : Colors.green.shade300),
+                                  ),
+                                  child: Text(
+                                    isSosActive ? "PRIORITY: $_currentSeverityText ($_currentClicks CLICKS)" : "ARMED",
+                                    style: TextStyle(
+                                      color: isSosActive ? Colors.white : Colors.green.shade800,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 10,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              isSosActive
+                                  ? "Broadcasting live GPS telemetry, incident classification ($_detectedIncidentType) & siren alarms to nearest responders. Emergency email & SMS dispatched."
+                                  : "Ready for immediate protection. Trigger via big SOS button, volume clicks (3x-6x priority escalation),  iPhone Back Tap, or automatic vehicle crash & fall detection.",
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: isSosActive ? Colors.red.shade900 : Colors.black54,
+                                height: 1.3,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 6),
-                  Text(
-                    isSosActive
-                        ? "Broadcasting live GPS telemetry, incident classification ($_detectedIncidentType) & siren alarms to nearest responders. Emergency email & SMS dispatched."
-                        : "Ready for immediate protection. Trigger via big SOS button, volume clicks (3x-6x priority escalation),  iPhone Back Tap, or automatic vehicle crash & fall detection.",
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: isSosActive ? Colors.red.shade900 : Colors.black54,
-                      height: 1.3,
-                    ),
-                  ),
-                ],
+                ),
               ),
             ),
           ],
         ),
       ),
-    ),
-  ],
-),
-),
-);
-}
+    );
+  }
+
+  Widget _buildEmergencyVoiceCard() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 20),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: _isSosVoiceRecording
+            ? Colors.red.shade50
+            : (_lastVoiceNoteBase64 != null ? Colors.amber.shade50 : Colors.white),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: _isSosVoiceRecording
+              ? Colors.redAccent
+              : (_lastVoiceNoteBase64 != null ? Colors.amber.shade600 : Colors.grey.shade300),
+          width: _isSosVoiceRecording ? 1.8 : 1.0,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: _isSosVoiceRecording
+                ? Colors.redAccent.withValues(alpha: 0.2)
+                : Colors.black.withValues(alpha: 0.04),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(7),
+                decoration: BoxDecoration(
+                  color: _isSosVoiceRecording
+                      ? Colors.redAccent
+                      : (_lastVoiceNoteBase64 != null ? Colors.amber.shade700 : Colors.blueGrey.shade700),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  _isSosVoiceRecording
+                      ? Icons.mic
+                      : (_lastVoiceNoteBase64 != null ? Icons.mic_external_on : Icons.mic_none),
+                  color: Colors.white,
+                  size: 18,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _isSosVoiceRecording
+                          ? "RECORDING EMERGENCY VOICE MESSAGE"
+                          : (_lastVoiceNoteBase64 != null
+                              ? "VOICE MESSAGE ATTACHED (${_lastVoiceDurationSec}s)"
+                              : "EMERGENCY VOICE MESSAGE"),
+                      style: TextStyle(
+                        fontWeight: FontWeight.w900,
+                        fontSize: 11.5,
+                        color: _isSosVoiceRecording
+                            ? Colors.red.shade900
+                            : (_lastVoiceNoteBase64 != null ? Colors.amber.shade900 : Colors.black87),
+                      ),
+                    ),
+                    const SizedBox(height: 1),
+                    Text(
+                      _isSosVoiceRecording
+                          ? "Speaking into mic... Responders will receive this immediately."
+                          : (_lastVoiceNoteBase64 != null
+                              ? "Dispatched to nearby responders & attached to SOS."
+                              : "Record an explanation for responders of what is happening."),
+                      style: const TextStyle(fontSize: 10, color: Colors.black54),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (_isSosVoiceRecording) ...[
+            Row(
+              children: [
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.red.shade100,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Center(
+                      child: Text(
+                        "🔴 RECORDING: $_sosVoiceSecondsLeft s remaining",
+                        style: TextStyle(
+                          fontWeight: FontWeight.w900,
+                          color: Colors.red.shade900,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red.shade900,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  icon: const Icon(Icons.send, size: 14),
+                  label: const Text("SEND NOW", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11)),
+                  onPressed: _stopAndSendSosVoiceMessage,
+                ),
+                const SizedBox(width: 4),
+                IconButton(
+                  icon: const Icon(Icons.close, color: Colors.black54, size: 18),
+                  tooltip: "Cancel",
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  onPressed: _cancelSosVoiceMessage,
+                ),
+              ],
+            ),
+          ] else ...[
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _lastVoiceNoteBase64 != null ? Colors.amber.shade800 : Colors.red.shade700,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                    icon: Icon(
+                      _lastVoiceNoteBase64 != null ? Icons.refresh : Icons.fiber_manual_record,
+                      size: 14,
+                    ),
+                    label: Text(
+                      _lastVoiceNoteBase64 != null
+                          ? "RE-RECORD EXPLANATION"
+                          : "🎙️ RECORD EMERGENCY VOICE MESSAGE (15s)",
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
+                    ),
+                    onPressed: _startSosVoiceMessageRecording,
+                  ),
+                ),
+                if (_lastVoiceNoteBase64 != null) ...[
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.amber.shade900,
+                      side: BorderSide(color: Colors.amber.shade800),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                    icon: Icon(_isPlayingVoiceNote ? Icons.stop : Icons.play_arrow, size: 14),
+                    label: Text(_isPlayingVoiceNote ? "STOP" : "PREVIEW", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11)),
+                    onPressed: () => _playVictimVoiceNote(_lastVoiceNoteBase64),
+                  ),
+                ],
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
 }

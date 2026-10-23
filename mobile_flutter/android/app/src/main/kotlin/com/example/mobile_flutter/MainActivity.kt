@@ -109,6 +109,13 @@ class MainActivity: FlutterActivity() {
                 instance?.volumeChannel?.invokeMethod("openResponderMap", null)
             }
         }
+        if (intent?.getBooleanExtra("auto_play_voice", false) == true) {
+            intent.removeExtra("auto_play_voice")
+            val victimId = intent.getStringExtra("victimId") ?: ""
+            instance?.runOnUiThread {
+                instance?.volumeChannel?.invokeMethod("autoPlayVoiceNote", victimId)
+            }
+        }
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -172,7 +179,8 @@ class MainActivity: FlutterActivity() {
                     val title = call.argument<String>("title") ?: "🚨 EMERGENCY SOS ALERT"
                     val body = call.argument<String>("body") ?: "A commuter needs immediate help!"
                     val victimId = call.argument<String>("victimId")
-                    showEmergencyNotification(title, body, victimId)
+                    val hasVoice = call.argument<Boolean>("hasVoiceNote") ?: false
+                    showEmergencyNotification(title, body, victimId, hasVoice)
                     result.success(true)
                 }
                 "cancelEmergencyNotification", "muteEmergencyAlarm" -> {
@@ -220,6 +228,12 @@ class MainActivity: FlutterActivity() {
 
     private fun startVoiceRecording(): Boolean {
         return try {
+            if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), 777)
+                android.util.Log.w("MainActivity", "RECORD_AUDIO not granted, requesting permission.")
+                return false
+            }
+
             val recorder = mediaRecorder
             if (recorder != null) {
                 try { recorder.stop() } catch (_: Exception) {}
@@ -229,23 +243,49 @@ class MainActivity: FlutterActivity() {
             cacheDir.mkdirs()
             val file = File(cacheDir, "accident_voice_" + System.currentTimeMillis() + ".m4a")
             voiceNoteFile = file
-            mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                MediaRecorder(this)
-            } else {
-                @Suppress("DEPRECATION")
-                MediaRecorder()
-            }.apply {
-                setAudioSource(MediaRecorder.AudioSource.MIC)
-                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                setAudioEncodingBitRate(64000)
-                setAudioSamplingRate(44100)
-                setOutputFile(file.absolutePath)
-                prepare()
-                start()
+
+            var started = false
+            try {
+                mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    MediaRecorder(this)
+                } else {
+                    @Suppress("DEPRECATION")
+                    MediaRecorder()
+                }.apply {
+                    setAudioSource(MediaRecorder.AudioSource.MIC)
+                    setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                    setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                    setOutputFile(file.absolutePath)
+                    prepare()
+                    start()
+                }
+                started = true
+            } catch (e: Exception) {
+                android.util.Log.w("MainActivity", "AAC recorder failed, falling back to 3GP/AMR: ${e.message}")
+                try { mediaRecorder?.release() } catch (_: Exception) {}
+                mediaRecorder = null
             }
+
+            if (!started) {
+                val amrFile = File(cacheDir, "accident_voice_" + System.currentTimeMillis() + ".3gp")
+                voiceNoteFile = amrFile
+                mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    MediaRecorder(this)
+                } else {
+                    @Suppress("DEPRECATION")
+                    MediaRecorder()
+                }.apply {
+                    setAudioSource(MediaRecorder.AudioSource.MIC)
+                    setOutputFormat(MediaRecorder.OutputFormat.THREE_GPP)
+                    setAudioEncoder(MediaRecorder.AudioEncoder.AMR_NB)
+                    setOutputFile(amrFile.absolutePath)
+                    prepare()
+                    start()
+                }
+            }
+
             recordingStartTime = System.currentTimeMillis()
-            android.util.Log.i("MainActivity", "startVoiceRecording: Recording started to ${file.absolutePath}")
+            android.util.Log.i("MainActivity", "startVoiceRecording: Recording started to ${voiceNoteFile?.absolutePath}")
             true
         } catch (e: Exception) {
             android.util.Log.e("MainActivity", "startVoiceRecording failed: ${e.message}")
@@ -295,7 +335,7 @@ class MainActivity: FlutterActivity() {
         }
     }
 
-    private fun showEmergencyNotification(title: String, body: String, victimId: String? = null) {
+    private fun showEmergencyNotification(title: String, body: String, victimId: String? = null, hasVoiceNote: Boolean = false) {
         if (!victimId.isNullOrEmpty()) { silencedVictimIds.remove(victimId); activeEmergencyVictim = victimId }
         if (!victimId.isNullOrEmpty()) {
             activeEmergencyVictim = victimId
@@ -387,6 +427,21 @@ class MainActivity: FlutterActivity() {
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
                 builder.setStyle(Notification.BigTextStyle().bigText(body))
+                if (hasVoiceNote) {
+                    val playVoiceIntent = Intent(this, MainActivity::class.java).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                        putExtra("open_responder_map", true)
+                        putExtra("auto_play_voice", true)
+                        putExtra("victimId", victimId)
+                    }
+                    val playVoicePendingIntent = PendingIntent.getActivity(
+                        this,
+                        915,
+                        playVoiceIntent,
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE else PendingIntent.FLAG_UPDATE_CURRENT
+                    )
+                    builder.addAction(Notification.Action.Builder(null, "▶️ LISTEN TO VOICE", playVoicePendingIntent).build())
+                }
                 builder.addAction(Notification.Action.Builder(null, "STOP ALARM", mutePendingIntent).build())
                 builder.addAction(Notification.Action.Builder(null, "VIEW LIVE RADAR", pendingIntent).build())
             }

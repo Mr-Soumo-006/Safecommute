@@ -41,6 +41,18 @@ io.on('connection', (socket) => {
         if (!payload.isLiveUpdate) console.log('[BLIND RELAY] Initial Ciphertext securely routed to contacts.');
     });
 
+    // Listen for dedicated emergency voice message from commuter
+    socket.on('emergency_voice_note', (payload) => {
+        console.log(`\n[VOICE NOTE RELAY] Emergency audio message received from ${payload.username || 'Commuter'} (${payload.voiceNoteDuration || 0}s). Relaying to all responders...`);
+        socket.broadcast.emit('emergency_voice_note', payload);
+        // Also relay as incoming_alert so radar maps update immediately
+        socket.broadcast.emit('incoming_alert', {
+            ...payload,
+            isLiveUpdate: false,
+            hasVoiceNote: true,
+        });
+    });
+
     // Listen for cancellation from the commuter
     socket.on('cancel_alert', (payload) => {
         console.log(`[ALERT CANCELLED] SOS cancelled by ${payload.username || socket.id}`);
