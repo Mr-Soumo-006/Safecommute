@@ -79,7 +79,7 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
       _backTapCount = prefs.getInt('backTapCount') ?? 2;
       _volumeButtonType = prefs.getString('volumeButtonType') ?? "down";
       _volumeClickCount = prefs.getInt('volumeClickCount') ?? 3;
-      _alertRadiusKm = prefs.getDouble('alertRadiusKm') ?? 5.0;
+      _alertRadiusKm = prefs.getDouble('alertRadiusKm') ?? 0.0;
       _savedContacts = prefs.getStringList('savedContacts') ?? [];
       _myUsername = prefs.getString('username') ?? "";
       _emergencyEmail = prefs.getString('emergencyEmail') ?? "";
@@ -550,11 +550,13 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
             ],
 
             SwitchListTile(
-              title: const Row(
+              title: Row(
                 children: [
-                  Text('Mobile Accident & Crash Detection', style: TextStyle(color: Colors.black87, fontWeight: FontWeight.w600)),
-                  SizedBox(width: 6),
-                  Icon(Icons.car_crash, color: Colors.redAccent, size: 20),
+                  const Expanded(
+                    child: Text('Mobile Accident & Crash Detection', style: TextStyle(color: Colors.black87, fontWeight: FontWeight.w600)),
+                  ),
+                  const SizedBox(width: 6),
+                  const Icon(Icons.car_crash, color: Colors.redAccent, size: 20),
                 ],
               ),
               subtitle: const Text('Detects vehicle collisions, pedestrian falls, and violent struggles using phone sensors (No external hardware)', style: TextStyle(color: Colors.black54)),
@@ -567,11 +569,13 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
             ),
 
             SwitchListTile(
-              title: const Row(
+              title: Row(
                 children: [
-                  Text(' iPhone-Style Back Tap SOS', style: TextStyle(color: Colors.black87, fontWeight: FontWeight.w600)),
-                  SizedBox(width: 6),
-                  Icon(Icons.touch_app, color: Colors.blueAccent, size: 20),
+                  const Expanded(
+                    child: Text('iPhone-Style Back Tap SOS', style: TextStyle(color: Colors.black87, fontWeight: FontWeight.w600)),
+                  ),
+                  const SizedBox(width: 6),
+                  const Icon(Icons.touch_app, color: Colors.blueAccent, size: 20),
                 ],
               ),
               subtitle: const Text('Firmly tap the back of your phone with your finger to instantly trigger SOS', style: TextStyle(color: Colors.black54)),
@@ -585,10 +589,12 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
             if (_backTapEnabled) ...[
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
-                child: Row(
+                child: Wrap(
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 8,
+                  runSpacing: 6,
                   children: [
                     const Text("Back Tap Trigger:", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.black87)),
-                    const SizedBox(width: 12),
                     ChoiceChip(
                       label: const Text("Double Tap (2x)"),
                       selected: _backTapCount == 2,
@@ -600,7 +606,6 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
                         }
                       },
                     ),
-                    const SizedBox(width: 8),
                     ChoiceChip(
                       label: const Text("Triple Tap (3x)"),
                       selected: _backTapCount == 3,

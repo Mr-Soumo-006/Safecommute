@@ -91,6 +91,7 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
   bool _backgroundMonitoringEnabled = true;
   final Set<String> _silencedVictims = {};
   bool _isAlertsSilenced = false;
+  bool _isPlayingVoice = false;
 
   StreamSubscription<AccelerometerEvent>? _shakeSubscription;
   final List<DateTime> _volumePressTimestamps = [];
@@ -363,6 +364,8 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
 
         LatLng victimPos = LatLng(lat, lng);
         bool isBrandNewAlert = !_activeAlerts.containsKey(username);
+        bool isEscalation = _activeAlerts.containsKey(username) && 
+            (severityLevel > _activeAlerts[username]!.severityLevel || clickCount > _activeAlerts[username]!.clickCount);
 
         setState(() {
           _activeAlerts[username] = VictimAlert(
@@ -384,9 +387,8 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
           _statusText = "🚨 ${_activeAlerts.length} Active Emergency ($severityText)";
         });
 
-        // Trigger notification & loud siren ONLY on initial alert or escalation,
-        // and ONLY if not silenced by the user, and NEVER on continuous 4s live streaming updates!
-        if (isBrandNewAlert && !isLiveUpdate && !_silencedVictims.contains(username) && !_isAlertsSilenced) {
+        // Trigger notification & loud siren on initial alert OR priority escalation:
+        if ((isBrandNewAlert || isEscalation) && !_silencedVictims.contains(username) && !_isAlertsSilenced) {
           _handleNewEmergencyAlert(
             username,
             lat,
@@ -395,6 +397,9 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
             severityLevel: severityLevel,
             severityText: severityText,
             clickCount: clickCount,
+            hasVoiceNote: hasVoiceNote,
+            voiceNoteBase64: voiceNoteBase64,
+            voiceNoteDuration: voiceNoteDuration,
           );
         }
 
@@ -451,10 +456,11 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
     int severityLevel = 1,
     String severityText = "ELEVATED",
     int clickCount = 3,
+    bool hasVoiceNote = false,
+    String? voiceNoteBase64,
+    int voiceNoteDuration = 0,
   }) async {
-    // 0. Proximity Geofenced Filter: Only nearest responders are alerted with full siren & alarm!
     final prefs = await SharedPreferences.getInstance();
-    double radiusKm = prefs.getDouble('alertRadiusKm') ?? 5.0; // Default 5 km
 
     Position? pos = _myPosition;
     if (pos == null) {
@@ -465,7 +471,7 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
     }
 
     double distanceMeters = 0.0;
-    bool isNearby = true;
+    String distDesc = "Nearest Dispatch (Responder Location Offline)";
     if (pos != null) {
       distanceMeters = Geolocator.distanceBetween(
         pos.latitude,
@@ -473,44 +479,24 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
         lat,
         lng,
       );
-      if (radiusKm > 0.0 && distanceMeters > (radiusKm * 1000.0)) {
-        isNearby = false;
-      }
+      distDesc = distanceMeters < 1000
+          ? "${distanceMeters.round()} m away"
+          : "${(distanceMeters / 1000).toStringAsFixed(1)} km away";
     }
-
-    if (!isNearby) {
-      final distStr = distanceMeters < 1000
-          ? "${distanceMeters.round()} m"
-          : "${(distanceMeters / 1000).toStringAsFixed(1)} km";
-      debugPrint("[PROXIMITY FILTER] SOS from $username is $distStr away (> ${radiusKm.toStringAsFixed(0)} km). Siren and alarm suppressed.");
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text("ℹ️ Distant SOS active: $username ($distStr away). Siren silenced to avoid false alarm."),
-            behavior: SnackBarBehavior.floating,
-            backgroundColor: Colors.blueGrey.shade800,
-            duration: const Duration(seconds: 4),
-          ),
-        );
-      }
-      return;
-    }
-
-    final distDesc = pos != null
-        ? (distanceMeters < 1000 ? "${distanceMeters.round()} m away" : "${(distanceMeters / 1000).toStringAsFixed(1)} km away")
-        : "nearby";
 
     String incidentLabel = "🚨 SOS ALERT";
-    if (incidentType == "VEHICLE_CRASH") incidentLabel = "🚗💥 VEHICLE CRASH";
-    if (incidentType == "HARD_FALL") incidentLabel = "⚠️🤕 HARD FALL";
-    if (incidentType == "PHYSICAL_ASSAULT") incidentLabel = "🚨🥊 ASSAULT STRUGGLE";
-    if (incidentType == "BACK_TAP_SOS") incidentLabel = " BACK TAP SOS";
+    if (incidentType == "VEHICLE_CRASH") incidentLabel = "🚗 VEHICLE CRASH";
+    if (incidentType == "HARD_FALL") incidentLabel = "⚠️ HARD FALL";
+    if (incidentType == "PHYSICAL_ASSAULT") incidentLabel = "🚨 ASSAULT STRUGGLE";
+    if (incidentType == "BACK_TAP_SOS") incidentLabel = "📱 BACK TAP SOS";
+
+    String voiceSuffix = hasVoiceNote ? " • 🎙️ Audio Message ($voiceNoteDuration s)" : "";
 
     // 1. Native Android Heads-Up Notification & Heavy Vibration for Nearest Responders
     try {
       await _volumeChannel.invokeMethod('showEmergencyNotification', {
         'title': "$incidentLabel: $username NEEDS HELP! [$severityText]",
-        'body': "$username is in danger ($distDesc)! Severity Tier $severityLevel. Tap to view Live GPS Radar.",
+        'body': "$username is in danger ($distDesc)! Tier $severityLevel$voiceSuffix. Tap to view Live GPS Radar.",
         'victimId': username,
       });
     } catch (_) {}
@@ -543,6 +529,9 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
         severityLevel: severityLevel,
         severityText: severityText,
         clickCount: clickCount,
+        hasVoiceNote: hasVoiceNote,
+        voiceNoteBase64: voiceNoteBase64,
+        voiceNoteDuration: voiceNoteDuration,
       );
     }
   }
@@ -553,12 +542,24 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
 
   Future<void> _playVictimVoiceNote(String base64Str) async {
     try {
+      if (_isPlayingVoice) {
+        await _alertPlayer.stop();
+        if (mounted) setState(() => _isPlayingVoice = false);
+        return;
+      }
       final bytes = base64Decode(base64Str);
       final tempFile = File('${Directory.systemTemp.path}/responder_voice_${DateTime.now().millisecondsSinceEpoch}.m4a');
       await tempFile.writeAsBytes(bytes);
       await _alertPlayer.stop();
+      if (mounted) setState(() => _isPlayingVoice = true);
+      await _alertPlayer.setVolume(1.0);
       await _alertPlayer.play(DeviceFileSource(tempFile.path));
-    } catch (_) {}
+      _alertPlayer.onPlayerComplete.listen((_) {
+        if (mounted) setState(() => _isPlayingVoice = false);
+      });
+    } catch (_) {
+      if (mounted) setState(() => _isPlayingVoice = false);
+    }
   }
 
   void _muteAlarm({String? victimUsername}) async {
@@ -604,6 +605,9 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
     int severityLevel = 1,
     String severityText = "ELEVATED",
     int clickCount = 3,
+    bool hasVoiceNote = false,
+    String? voiceNoteBase64,
+    int voiceNoteDuration = 0,
   }) {
     showDialog(
       context: context,
@@ -613,7 +617,7 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
         if (incidentType == "VEHICLE_CRASH") incidentLabel = "🚗 Crash / Collision";
         if (incidentType == "HARD_FALL") incidentLabel = "⚠️ Hard Fall Accident";
         if (incidentType == "PHYSICAL_ASSAULT") incidentLabel = "🚨 Physical Assault";
-        if (incidentType == "BACK_TAP_SOS") incidentLabel = " iPhone Back Tap SOS";
+        if (incidentType == "BACK_TAP_SOS") incidentLabel = "📱 iPhone Back Tap SOS";
 
         return AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
@@ -707,6 +711,41 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
                 "Distance: ${_formatDistance(lat, lng)}",
                 style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.blueAccent),
               ),
+              if (hasVoiceNote && voiceNoteBase64 != null) ...[
+                const SizedBox(height: 10),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.shade50,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Colors.amber.shade400),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.record_voice_over, color: Colors.amber, size: 22),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          "Victim Voice Note Attached ($voiceNoteDuration s)",
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.amber.shade900),
+                        ),
+                      ),
+                      ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.amber.shade800,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          textStyle: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
+                        ),
+                        icon: Icon(_isPlayingVoice ? Icons.stop : Icons.play_arrow, size: 14),
+                        label: Text(_isPlayingVoice ? "STOP" : "PLAY"),
+                        onPressed: () => _playVictimVoiceNote(voiceNoteBase64),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
               const SizedBox(height: 6),
               const Text(
                 "Real-time GPS telemetry is streaming. Immediate response is required.",
@@ -829,7 +868,7 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
   }
 
   String _formatDistance(double victimLat, double victimLng) {
-    if (_myPosition == null) return "Locating you...";
+    if (_myPosition == null) return "GPS Off • Tap Turn-by-Turn GPS";
     double meters = Geolocator.distanceBetween(
       _myPosition!.latitude,
       _myPosition!.longitude,
@@ -837,7 +876,7 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
       victimLng,
     );
     if (meters < 1000) {
-      return "${meters.round()} meters away";
+      return "${meters.round()} m away";
     } else {
       return "${(meters / 1000).toStringAsFixed(1)} km away";
     }
@@ -845,7 +884,7 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
 
   Map<String, dynamic> _getNavigationTurn(double victimLat, double victimLng) {
     if (_myPosition == null) {
-      return {'text': 'Locating you...', 'icon': Icons.my_location, 'color': Colors.grey};
+      return {'text': 'GPS Off • Tap GPS button to route', 'icon': Icons.navigation, 'color': Colors.blueGrey};
     }
 
     double distanceMeters = Geolocator.distanceBetween(
@@ -1675,6 +1714,56 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
                           ),
                         ],
                       ),
+                      if (currentVictim.hasVoiceNote && currentVictim.voiceNoteBase64 != null) ...[
+                        const SizedBox(height: 10),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(colors: [Colors.amber.shade700, Colors.orange.shade800]),
+                            borderRadius: BorderRadius.circular(10),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.orange.withValues(alpha: 0.3),
+                                blurRadius: 6,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(_isPlayingVoice ? Icons.graphic_eq : Icons.record_voice_over, color: Colors.white, size: 22),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text(
+                                      "Victim's Voice Explanation Attached",
+                                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                                    ),
+                                    Text(
+                                      "Duration: ${currentVictim.voiceNoteDuration}s audio • Tap to hear what happened",
+                                      style: const TextStyle(color: Colors.white70, fontSize: 10),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              ElevatedButton.icon(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.white,
+                                  foregroundColor: Colors.orange.shade900,
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                  textStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
+                                ),
+                                icon: Icon(_isPlayingVoice ? Icons.stop : Icons.play_arrow, size: 16),
+                                label: Text(_isPlayingVoice ? "STOP" : "PLAY"),
+                                onPressed: () => _playVictimVoiceNote(currentVictim.voiceNoteBase64!),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                       const SizedBox(height: 14),
 
                       // Action Buttons Row (Clean, Highly Workable)

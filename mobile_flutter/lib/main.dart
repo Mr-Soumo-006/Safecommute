@@ -298,7 +298,7 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text(" iPhone Back Tap Detected: Emergency SOS Triggered!"),
+          content: Text("iPhone Back Tap Detected: Emergency SOS Triggered!"),
           backgroundColor: Colors.blueAccent,
           duration: Duration(seconds: 3),
         ),
@@ -328,6 +328,8 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
   void _showAccidentCountdownDialog(AccidentTelemetry telemetry) {
     int countdown = 10;
     Timer? countdownTimer;
+    Timer? recordingTimer;
+    int recordingSecondsLeft = 15;
     bool isRecordingVoice = false;
     bool hasRecordedVoice = false;
     String? recordedVoiceBase64;
@@ -340,31 +342,26 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
       builder: (ctx) {
         return StatefulBuilder(
           builder: (context, setDialogState) {
-            countdownTimer ??= Timer.periodic(const Duration(seconds: 1), (t) async {
-              if (countdown > 1) {
-                setDialogState(() => countdown--);
-                HapticFeedback.mediumImpact();
-              } else {
-                t.cancel();
-                if (isRecordingVoice) {
-                  try {
-                    final dynamic res = await _volumeChannel.invokeMethod('stopVoiceRecording');
-                    if (res is Map && res['success'] == true) {
-                      recordedVoiceBase64 = res['base64']?.toString();
-                      recordedDurationSec = (res['durationSec'] as num?)?.toInt() ?? 0;
-                    }
-                  } catch (_) {}
+            // Only start the auto-dispatch countdown if NOT actively recording
+            if (!isRecordingVoice && countdownTimer == null) {
+              countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) async {
+                if (countdown > 1) {
+                  setDialogState(() => countdown--);
+                  HapticFeedback.mediumImpact();
+                } else {
+                  t.cancel();
+                  countdownTimer = null;
+                  if (ctx.mounted) {
+                    Navigator.of(ctx, rootNavigator: true).pop();
+                  }
+                  _triggerAccidentSos(
+                    telemetry,
+                    voiceBase64: recordedVoiceBase64,
+                    voiceDurationSec: recordedDurationSec,
+                  );
                 }
-                if (ctx.mounted) {
-                  Navigator.of(ctx, rootNavigator: true).pop();
-                }
-                _triggerAccidentSos(
-                  telemetry,
-                  voiceBase64: recordedVoiceBase64,
-                  voiceDurationSec: recordedDurationSec,
-                );
-              }
-            });
+              });
+            }
 
             return AlertDialog(
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
@@ -399,23 +396,25 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
                     width: double.infinity,
                     padding: const EdgeInsets.symmetric(vertical: 10),
                     decoration: BoxDecoration(
-                      color: Colors.red.shade50,
+                      color: isRecordingVoice ? Colors.amber.shade50 : Colors.red.shade50,
                       borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.red.shade300),
+                      border: Border.all(color: isRecordingVoice ? Colors.amber.shade400 : Colors.red.shade300),
                     ),
                     child: Column(
                       children: [
-                        const Text(
-                          "Broadcasting SOS & Incident Email in:",
-                          style: TextStyle(fontSize: 12, color: Colors.black54),
+                        Text(
+                          isRecordingVoice
+                              ? "🎙️ Recording Voice Note (Countdown Paused):"
+                              : "Broadcasting SOS & Incident Email in:",
+                          style: TextStyle(fontSize: 12, color: isRecordingVoice ? Colors.amber.shade900 : Colors.black54),
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          "$countdown s",
+                          isRecordingVoice ? "${recordingSecondsLeft}s left" : "$countdown s",
                           style: TextStyle(
-                            fontSize: 30,
+                            fontSize: 28,
                             fontWeight: FontWeight.w900,
-                            color: Colors.red.shade900,
+                            color: isRecordingVoice ? Colors.deepOrange.shade800 : Colors.red.shade900,
                           ),
                         ),
                       ],
@@ -455,7 +454,7 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text("Voice Record What Happened:", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11)),
-                                    Text("Tap to record quick voice explanation", style: TextStyle(fontSize: 9, color: Colors.black54)),
+                                    Text("Explains situation to responders", style: TextStyle(fontSize: 9, color: Colors.black54)),
                                   ],
                                 ),
                               ),
@@ -470,10 +469,43 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
                                 label: const Text("RECORD"),
                                 onPressed: () async {
                                   try {
+                                    // Pause countdown so commuter can explain clearly
+                                    countdownTimer?.cancel();
+                                    countdownTimer = null;
+
                                     await Permission.microphone.request();
                                     final started = await _volumeChannel.invokeMethod('startVoiceRecording') ?? false;
                                     if (started == true) {
-                                      setDialogState(() => isRecordingVoice = true);
+                                      setDialogState(() {
+                                        isRecordingVoice = true;
+                                        recordingSecondsLeft = 15;
+                                      });
+
+                                      recordingTimer?.cancel();
+                                      recordingTimer = Timer.periodic(const Duration(seconds: 1), (rt) async {
+                                        if (recordingSecondsLeft > 1) {
+                                          setDialogState(() => recordingSecondsLeft--);
+                                        } else {
+                                          rt.cancel();
+                                          recordingTimer = null;
+                                          try {
+                                            final dynamic res = await _volumeChannel.invokeMethod('stopVoiceRecording');
+                                            if (res is Map && res['success'] == true) {
+                                              setDialogState(() {
+                                                isRecordingVoice = false;
+                                                hasRecordedVoice = true;
+                                                recordedVoiceBase64 = res['base64']?.toString();
+                                                recordedDurationSec = (res['durationSec'] as num?)?.toInt() ?? 15;
+                                                countdown = 5;
+                                              });
+                                            } else {
+                                              setDialogState(() => isRecordingVoice = false);
+                                            }
+                                          } catch (_) {
+                                            setDialogState(() => isRecordingVoice = false);
+                                          }
+                                        }
+                                      });
                                     }
                                   } catch (_) {}
                                 },
@@ -485,10 +517,10 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
                             children: [
                               const Icon(Icons.record_voice_over, color: Colors.red, size: 22),
                               const SizedBox(width: 8),
-                              const Expanded(
+                              Expanded(
                                 child: Text(
-                                  "🔴 RECORDING... Speak now!",
-                                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.red),
+                                  "🔴 RECORDING... Speak now! (${recordingSecondsLeft}s)",
+                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.red),
                                 ),
                               ),
                               ElevatedButton(
@@ -498,8 +530,10 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
                                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                                   textStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
                                 ),
-                                child: const Text("SAVE"),
+                                child: const Text("SAVE & ATTACH"),
                                 onPressed: () async {
+                                  recordingTimer?.cancel();
+                                  recordingTimer = null;
                                   try {
                                     final dynamic res = await _volumeChannel.invokeMethod('stopVoiceRecording');
                                     if (res is Map && res['success'] == true) {
@@ -508,6 +542,7 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
                                         hasRecordedVoice = true;
                                         recordedVoiceBase64 = res['base64']?.toString();
                                         recordedDurationSec = (res['durationSec'] as num?)?.toInt() ?? 0;
+                                        countdown = 5; // Give 5s to review before auto-dispatch
                                       });
                                     } else {
                                       setDialogState(() => isRecordingVoice = false);
@@ -526,7 +561,7 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
                               const SizedBox(width: 6),
                               Expanded(
                                 child: Text(
-                                  "Voice Note Saved (${recordedDurationSec}s) • Attaching to SOS",
+                                  "Voice Note Attached (${recordedDurationSec}s) • Ready for Responders",
                                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 10, color: Colors.green.shade900),
                                 ),
                               ),
@@ -534,9 +569,13 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
                                 icon: const Icon(Icons.refresh, size: 16, color: Colors.black54),
                                 tooltip: "Re-record",
                                 onPressed: () {
+                                  countdownTimer?.cancel();
+                                  countdownTimer = null;
                                   setDialogState(() {
                                     hasRecordedVoice = false;
                                     recordedVoiceBase64 = null;
+                                    recordedDurationSec = 0;
+                                    countdown = 10;
                                   });
                                 },
                               ),
@@ -555,10 +594,11 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
                     side: const BorderSide(color: Colors.grey),
                   ),
                   onPressed: () async {
+                    recordingTimer?.cancel();
+                    countdownTimer?.cancel();
                     if (isRecordingVoice) {
                       try { await _volumeChannel.invokeMethod('stopVoiceRecording'); } catch (_) {}
                     }
-                    countdownTimer?.cancel();
                     if (ctx.mounted) {
                       Navigator.of(ctx, rootNavigator: true).pop();
                     }
@@ -571,6 +611,7 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
                     foregroundColor: Colors.white,
                   ),
                   onPressed: () async {
+                    recordingTimer?.cancel();
                     countdownTimer?.cancel();
                     if (isRecordingVoice) {
                       try {
@@ -590,7 +631,10 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
                       voiceDurationSec: recordedDurationSec,
                     );
                   },
-                  child: const Text("DISPATCH NOW", style: TextStyle(fontWeight: FontWeight.bold)),
+                  child: Text(
+                    hasRecordedVoice ? "SEND SOS WITH VOICE" : "DISPATCH NOW",
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
                 ),
               ],
             );
@@ -670,13 +714,19 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
         int requiredClicks = prefs.getInt('volumeClickCount') ?? 3;
 
         if (direction == selectedButton) {
-          final now = DateTime.now();
-          _volumePressTimestamps.add(now);
-          _volumePressTimestamps.removeWhere((t) => now.difference(t).inMilliseconds > 3000);
+          if (isSosActive) {
+            // SOS is active: Multi-click volume button escalation
+            int newClicks = _currentClicks + 1;
+            int newLevel = newClicks >= 6 ? 3 : (newClicks >= 4 ? 2 : _currentSeverityLevel);
+            String newText = newLevel == 3 ? "CRITICAL" : (newLevel == 2 ? "URGENT" : "ELEVATED");
+            _escalateSeverity(newClicks, newLevel, newText);
+          } else {
+            final now = DateTime.now();
+            _volumePressTimestamps.add(now);
+            _volumePressTimestamps.removeWhere((t) => now.difference(t).inMilliseconds > 3500);
 
-          int totalCount = _volumePressTimestamps.length;
-          if (totalCount >= requiredClicks) {
-            if (!isSosActive) {
+            int totalCount = _volumePressTimestamps.length;
+            if (totalCount >= requiredClicks) {
               HapticFeedback.heavyImpact();
               toggleSOS(
                 severityLevel: 1,
@@ -685,10 +735,6 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
                 triggerSource: "VOLUME_BUTTON",
                 incidentType: "PANIC_SOS",
               );
-            } else if (totalCount >= 4 && totalCount <= 5) {
-              _escalateSeverity(totalCount, 2, "URGENT");
-            } else if (totalCount >= 6) {
-              _escalateSeverity(totalCount, 3, "CRITICAL");
             }
           }
         }
@@ -697,7 +743,7 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
   }
 
   void _escalateSeverity(int clicks, int level, String text) async {
-    if (level <= _currentSeverityLevel && clicks <= _currentClicks) return;
+    if (level < _currentSeverityLevel && clicks <= _currentClicks) return;
 
     setState(() {
       _currentClicks = clicks;
@@ -728,6 +774,9 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
       'severityText': _currentSeverityText,
       'clickCount': _currentClicks,
       'triggerSource': "VOLUME_BUTTON_ESCALATION",
+      'hasVoiceNote': _lastVoiceNoteBase64 != null && _lastVoiceNoteBase64!.isNotEmpty,
+      'voiceNoteBase64': _lastVoiceNoteBase64,
+      'voiceNoteDuration': _lastVoiceDurationSec,
     });
 
     String mapLink = "https://maps.google.com/?q=${pos?.latitude ?? 22.5726},${pos?.longitude ?? 88.3639}";
@@ -742,6 +791,8 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
       lat: pos?.latitude ?? 22.5726,
       lng: pos?.longitude ?? 88.3639,
       clickCount: clicks,
+      hasVoiceNote: _lastVoiceNoteBase64 != null && _lastVoiceNoteBase64!.isNotEmpty,
+      voiceNoteDuration: _lastVoiceDurationSec,
     );
 
     if (mounted) {
@@ -896,9 +947,13 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
                   ? "${distM.round()} m away"
                   : "${(distM / 1000).toStringAsFixed(1)} km away";
             } else {
-              alertData['distanceText'] = "Nearby";
+              alertData['distanceText'] = "Nearest Dispatch (GPS Offline)";
             }
-          } catch (_) {}
+          } catch (_) {
+            alertData['distanceText'] = "Nearest Dispatch (GPS Offline)";
+          }
+        } else {
+          alertData['distanceText'] = "Nearest Dispatch";
         }
 
         // 3. If continuous live GPS streaming update:
@@ -920,17 +975,20 @@ class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObs
 
         // 5. Trigger native heads-up emergency notification & alarm
         try {
-          String dist = alertData['distanceText'] ?? "Nearby";
+          String dist = alertData['distanceText'] ?? "Nearest Dispatch";
           String incident = alertData['incidentType'] == "VEHICLE_CRASH"
               ? "🚗 Vehicle Crash"
               : alertData['incidentType'] == "HARD_FALL"
                   ? "⚠️ Hard Fall"
                   : alertData['incidentType'] == "PHYSICAL_ASSAULT"
                       ? "🚨 Assault / Struggle"
-                      : "🚨 EMERGENCY SOS";
+                      : alertData['incidentType'] == "BACK_TAP_SOS"
+                          ? "📱 Back Tap SOS"
+                          : "🚨 EMERGENCY SOS";
+          String voiceNotice = alertData['hasVoiceNote'] == true ? " • 🎙️ Voice Note Attached" : "";
           await _volumeChannel.invokeMethod('showEmergencyNotification', {
             'title': "$incident: $victimName NEEDS HELP!",
-            'body': "$victimName triggered emergency SOS ($dist)! Tap to view Live GPS Radar.",
+            'body': "$victimName triggered emergency SOS ($dist)$voiceNotice! Tap to view Live GPS Radar.",
             'victimId': victimName,
           });
         } catch (_) {}

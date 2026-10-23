@@ -78,17 +78,17 @@ class VolumeSosAccessibilityService : AccessibilityService() {
         if (sessionClicks >= requiredClicks && currentSeverityLevel == 0) {
             // First threshold met: Trigger initial SOS (Level 1: ELEVATED)
             currentSeverityLevel = 1
-            emergencyActiveUntil = now + 30000L // 30-second active escalation window
+            emergencyActiveUntil = now + 60000L // 60-second active escalation window
             triggerEmergencySos(sessionClicks, 1, "ELEVATED")
         } else if (sessionClicks in 4..5 && currentSeverityLevel < 2) {
             // Second threshold met: Escalate to Level 2 (URGENT DANGER)
             currentSeverityLevel = 2
-            emergencyActiveUntil = now + 30000L
+            emergencyActiveUntil = now + 60000L
             escalateEmergencySeverity(sessionClicks, 2, "URGENT")
         } else if (sessionClicks >= 6 && currentSeverityLevel < 3) {
             // Third threshold met: Escalate to Level 3 (CRITICAL LIFE THREAT)
             currentSeverityLevel = 3
-            emergencyActiveUntil = now + 30000L
+            emergencyActiveUntil = now + 60000L
             escalateEmergencySeverity(sessionClicks, 3, "CRITICAL")
         }
     }

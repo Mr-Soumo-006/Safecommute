@@ -218,7 +218,7 @@ class MainActivity: FlutterActivity() {
         }
     }
 
-        private fun startVoiceRecording(): Boolean {
+    private fun startVoiceRecording(): Boolean {
         return try {
             val recorder = mediaRecorder
             if (recorder != null) {
@@ -226,6 +226,7 @@ class MainActivity: FlutterActivity() {
                 recorder.release()
                 mediaRecorder = null
             }
+            cacheDir.mkdirs()
             val file = File(cacheDir, "accident_voice_" + System.currentTimeMillis() + ".m4a")
             voiceNoteFile = file
             mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -244,8 +245,10 @@ class MainActivity: FlutterActivity() {
                 start()
             }
             recordingStartTime = System.currentTimeMillis()
+            android.util.Log.i("MainActivity", "startVoiceRecording: Recording started to ${file.absolutePath}")
             true
         } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "startVoiceRecording failed: ${e.message}")
             mediaRecorder = null
             false
         }
@@ -255,15 +258,25 @@ class MainActivity: FlutterActivity() {
         return try {
             val recorder = mediaRecorder
             if (recorder != null) {
-                try { recorder.stop() } catch (_: Exception) {}
+                // Ensure at least 1.2 seconds has elapsed to prevent Android MediaRecorder "stop failed" RuntimeException
+                val elapsed = System.currentTimeMillis() - recordingStartTime
+                if (elapsed < 1200L) {
+                    try { Thread.sleep(1200L - elapsed) } catch (_: Exception) {}
+                }
+                try {
+                    recorder.stop()
+                } catch (e: Exception) {
+                    android.util.Log.w("MainActivity", "MediaRecorder.stop() exception: ${e.message}")
+                }
                 recorder.release()
                 mediaRecorder = null
             }
             val file = voiceNoteFile
             if (file != null && file.exists() && file.length() > 0) {
-                val durationSec = ((System.currentTimeMillis() - recordingStartTime) / 1000).toInt()
+                val durationSec = maxOf(1, ((System.currentTimeMillis() - recordingStartTime) / 1000).toInt())
                 val bytes = file.readBytes()
                 val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                android.util.Log.i("MainActivity", "stopVoiceRecording: Captured ${bytes.size} bytes (${durationSec}s)")
                 mapOf(
                     "success" to true,
                     "filePath" to file.absolutePath,
@@ -272,10 +285,12 @@ class MainActivity: FlutterActivity() {
                     "size" to file.length()
                 )
             } else {
+                android.util.Log.w("MainActivity", "stopVoiceRecording: Voice file missing or 0 bytes")
                 mapOf("success" to false)
             }
         } catch (e: Exception) {
             mediaRecorder = null
+            android.util.Log.e("MainActivity", "stopVoiceRecording error: ${e.message}")
             mapOf("success" to false, "error" to (e.message ?: "Unknown error"))
         }
     }

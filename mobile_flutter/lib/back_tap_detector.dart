@@ -70,13 +70,13 @@ class BackTapDetector {
 
     // Filter: Tap must have strong Z impulse with moderate lateral movement
     // (A finger tap on the back has high Z jerk and relatively low lateral sway)
-    const double minZImpulse = 1.9; // m/s^2
-    const double maxLateralSway = 4.0; // m/s^2
+    const double minZImpulse = 1.35; // m/s^2 - tuned for reliable fingertip detection
+    const double maxLateralSway = 5.5; // m/s^2
 
     if (zAcc >= minZImpulse && lateralAcc < maxLateralSway) {
-      // Enforce a debounce between consecutive taps: at least 130ms apart
+      // Enforce a debounce between consecutive taps: at least 110ms apart
       // (prevents counting the mechanical recoil of a single tap as two taps)
-      if (_lastDetectedTapTime != null && now.difference(_lastDetectedTapTime!).inMilliseconds < 130) {
+      if (_lastDetectedTapTime != null && now.difference(_lastDetectedTapTime!).inMilliseconds < 110) {
         return;
       }
 
@@ -84,16 +84,16 @@ class BackTapDetector {
       _tapTimestamps.add(now);
 
       // Keep only taps within the valid tap window:
-      // For double-tap: within 500ms
-      // For triple-tap: within 850ms
-      final int windowMs = _requiredTaps == 3 ? 850 : 500;
+      // For double-tap: within 650ms
+      // For triple-tap: within 950ms
+      final int windowMs = _requiredTaps == 3 ? 950 : 650;
       _tapTimestamps.removeWhere((t) => now.difference(t).inMilliseconds > windowMs);
 
       if (_tapTimestamps.length >= _requiredTaps) {
         _tapTimestamps.clear();
         _lastTriggerTime = now;
         HapticFeedback.heavyImpact();
-        debugPrint("[BackTapDetector]  iPhone Back Tap detected! ($_requiredTaps taps)");
+        debugPrint("[BackTapDetector] iPhone Back Tap detected! ($_requiredTaps taps)");
         onBackTapTriggered();
       }
     }
