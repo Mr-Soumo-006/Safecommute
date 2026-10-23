@@ -27,8 +27,11 @@ io.on('connection', (socket) => {
         } else {
             console.log('\n[BLIND RELAY] Received SOS payload:');
             console.log('   From Victim ID:', socket.id);
+            console.log('   Victim Name:', payload.username || 'A Commuter');
             console.log('   Target Contact ID:', payload.targetContactId);
             console.log('   Battery Level:', payload.batteryMetadata || 'Unknown');
+            console.log('   Incident Type:', payload.incidentType || 'PANIC_SOS');
+            console.log('   Voice Note Attached:', payload.hasVoiceNote ? `YES (${payload.voiceNoteDuration || 0}s voice note)` : 'NO');
             console.log('   Ciphertext (Encrypted Location):', payload.ciphertext);
             console.log('   Grid Sector (Metadata):', payload.gridSector);
         }
@@ -115,6 +118,7 @@ io.on('connection', (socket) => {
         console.log(`   Coordinates: ${data.lat}, ${data.lng}`);
         console.log(`   Google Maps Radar: https://maps.google.com/?q=${data.lat},${data.lng}`);
         if (data.peakGForce) console.log(`   Sensor Telemetry: Peak G-Force = ${data.peakGForce.toFixed(2)}G`);
+        if (data.hasVoiceNote) console.log(`   Voice Note Telemetry: Audio attached (${data.voiceNoteDuration || 0}s voice record)`);
         console.log(`   Timestamp: ${new Date().toISOString()}`);
         console.log(`   Status: DISPATCHED & LOGGED TO EMERGENCY REPOSITORIES`);
         console.log(`======================================================\n`);

@@ -80,9 +80,7 @@ class ResponderAlertService : Service() {
             }
             ACTION_TRIGGER_EMERGENCY -> {
                 val victimId = intent?.getStringExtra("victimId") ?: ""
-                if (victimId.isNotEmpty() && silencedVictims.contains(victimId)) {
-                    return START_STICKY
-                }
+                if (victimId.isNotEmpty()) { silencedVictims.remove(victimId) }
                 val title = intent?.getStringExtra("title") ?: "🚨 CRITICAL SOS ALERT!"
                 val body = intent?.getStringExtra("body") ?: "A commuter triggered an emergency SOS!"
                 triggerEmergencyAlarm(title, body)

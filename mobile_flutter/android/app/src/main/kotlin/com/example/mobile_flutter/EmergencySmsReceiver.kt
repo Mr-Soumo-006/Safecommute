@@ -28,7 +28,8 @@ class EmergencySmsReceiver : BroadcastReceiver() {
             Log.d("EmergencySmsReceiver", "Incoming SMS from $sender: $body")
 
             // Check if this is an emergency message from SafeCommute
-            if (body.contains("EMERGENCY!", ignoreCase = true)) {
+            val isEmergency = body.contains("EMERGENCY", ignoreCase = true) || body.contains("SOS", ignoreCase = true) || body.contains("SafeCommute", ignoreCase = true) || body.contains("DANGER", ignoreCase = true)
+            if (isEmergency) {
                 // Wake up screen immediately
                 try {
                     val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
@@ -45,6 +46,8 @@ class EmergencySmsReceiver : BroadcastReceiver() {
                     putExtra("title", "🚨 CRITICAL SMS SOS ALERT!")
                     putExtra("body", body)
                     putExtra("sender", sender)
+                    putExtra("victimId", sender)
+                    ResponderAlertService.silencedVictims.remove(sender)
                 }
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

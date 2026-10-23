@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -27,6 +29,9 @@ class VictimAlert {
   final String severityText;
   final int clickCount;
   final String triggerSource;
+  final bool hasVoiceNote;
+  final String? voiceNoteBase64;
+  final int voiceNoteDuration;
 
   VictimAlert({
     required this.username,
@@ -39,6 +44,9 @@ class VictimAlert {
     this.severityText = "ELEVATED",
     this.clickCount = 3,
     this.triggerSource = "MANUAL_SOS",
+    this.hasVoiceNote = false,
+    this.voiceNoteBase64,
+    this.voiceNoteDuration = 0,
   });
 }
 
@@ -344,6 +352,14 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
         String severityText = payload['severityText']?.toString() ?? "ELEVATED";
         int clickCount = payload['clickCount'] is int ? payload['clickCount'] : 3;
         String triggerSource = payload['triggerSource']?.toString() ?? "MANUAL_SOS";
+        bool hasVoiceNote = payload['hasVoiceNote'] == true;
+        String? voiceNoteBase64 = payload['voiceNoteBase64']?.toString();
+        int voiceNoteDuration = (payload['voiceNoteDuration'] as num?)?.toInt() ?? 0;
+
+        if (!isLiveUpdate) {
+          _silencedVictims.remove(username);
+          _isAlertsSilenced = false;
+        }
 
         LatLng victimPos = LatLng(lat, lng);
         bool isBrandNewAlert = !_activeAlerts.containsKey(username);
@@ -360,6 +376,9 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
             severityText: severityText,
             clickCount: clickCount,
             triggerSource: triggerSource,
+            hasVoiceNote: hasVoiceNote,
+            voiceNoteBase64: voiceNoteBase64,
+            voiceNoteDuration: voiceNoteDuration,
           );
           _selectedVictimUsername ??= username;
           _statusText = "🚨 ${_activeAlerts.length} Active Emergency ($severityText)";
@@ -530,6 +549,16 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
 
   void muteAlarmFromExternal() {
     _muteAlarm();
+  }
+
+  Future<void> _playVictimVoiceNote(String base64Str) async {
+    try {
+      final bytes = base64Decode(base64Str);
+      final tempFile = File('${Directory.systemTemp.path}/responder_voice_${DateTime.now().millisecondsSinceEpoch}.m4a');
+      await tempFile.writeAsBytes(bytes);
+      await _alertPlayer.stop();
+      await _alertPlayer.play(DeviceFileSource(tempFile.path));
+    } catch (_) {}
   }
 
   void _muteAlarm({String? victimUsername}) async {
@@ -1562,15 +1591,42 @@ class ResponderMapScreenState extends State<ResponderMapScreen> {
                                         borderRadius: BorderRadius.circular(4),
                                       ),
                                       child: Text(
-                                        "TIER ${currentVictim.severityLevel}: ${currentVictim.severityText}",
-                                        style: const TextStyle(
-                                          fontSize: 9,
-                                          fontWeight: FontWeight.w900,
-                                          color: Colors.white,
+                                          "TIER ${currentVictim.severityLevel}: ${currentVictim.severityText}",
+                                          style: const TextStyle(
+                                            fontSize: 9,
+                                            fontWeight: FontWeight.w900,
+                                            color: Colors.white,
+                                          ),
                                         ),
                                       ),
-                                    ),
-                                  ],
+                                      if (currentVictim.hasVoiceNote && currentVictim.voiceNoteBase64 != null)
+                                        InkWell(
+                                          onTap: () => _playVictimVoiceNote(currentVictim.voiceNoteBase64!),
+                                          borderRadius: BorderRadius.circular(4),
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                            decoration: BoxDecoration(
+                                              color: Colors.amber.shade800,
+                                              borderRadius: BorderRadius.circular(4),
+                                            ),
+                                            child: Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                const Icon(Icons.volume_up, size: 10, color: Colors.white),
+                                                const SizedBox(width: 2),
+                                                Text(
+                                                  "VOICE (${currentVictim.voiceNoteDuration}s)",
+                                                  style: const TextStyle(
+                                                    fontSize: 8.5,
+                                                    fontWeight: FontWeight.w900,
+                                                    color: Colors.white,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                    ],
                                 ),
                                 const SizedBox(height: 4),
                                 Builder(

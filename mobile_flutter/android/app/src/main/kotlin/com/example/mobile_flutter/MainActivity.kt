@@ -18,6 +18,9 @@ import android.provider.Settings
 import android.telephony.SmsManager
 import android.text.TextUtils
 import android.view.KeyEvent
+import android.media.MediaRecorder
+import android.util.Base64
+import java.io.File
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -28,6 +31,9 @@ class MainActivity: FlutterActivity() {
     internal var volumeChannel: MethodChannel? = null
     private val silencedVictimIds = java.util.Collections.synchronizedSet(HashSet<String>())
     private var activeEmergencyVictim: String? = null
+    private var mediaRecorder: MediaRecorder? = null
+    private var voiceNoteFile: File? = null
+    private var recordingStartTime = 0L
 
     companion object {
         var instance: MainActivity? = null
@@ -80,6 +86,7 @@ class MainActivity: FlutterActivity() {
     }
 
     override fun onDestroy() {
+        try { mediaRecorder?.release(); mediaRecorder = null } catch (_: Exception) {}
         if (instance == this) {
             instance = null
         }
@@ -194,18 +201,87 @@ class MainActivity: FlutterActivity() {
                     ResponderAlertService.stop(this)
                     result.success(true)
                 }
-                "isResponderBackgroundServiceRunning" -> {
+                                "isResponderBackgroundServiceRunning" -> {
                     result.success(ResponderAlertService.isRunning)
+                }
+                "startVoiceRecording" -> {
+                    result.success(startVoiceRecording())
+                }
+                "stopVoiceRecording" -> {
+                    result.success(stopVoiceRecording())
+                }
+                "isVoiceRecording" -> {
+                    result.success(mediaRecorder != null)
                 }
                 else -> result.notImplemented()
             }
         }
     }
 
-    private fun showEmergencyNotification(title: String, body: String, victimId: String? = null) {
-        if (!victimId.isNullOrEmpty() && silencedVictimIds.contains(victimId)) {
-            return
+        private fun startVoiceRecording(): Boolean {
+        return try {
+            val recorder = mediaRecorder
+            if (recorder != null) {
+                try { recorder.stop() } catch (_: Exception) {}
+                recorder.release()
+                mediaRecorder = null
+            }
+            val file = File(cacheDir, "accident_voice_" + System.currentTimeMillis() + ".m4a")
+            voiceNoteFile = file
+            mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                MediaRecorder(this)
+            } else {
+                @Suppress("DEPRECATION")
+                MediaRecorder()
+            }.apply {
+                setAudioSource(MediaRecorder.AudioSource.MIC)
+                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                setAudioEncodingBitRate(64000)
+                setAudioSamplingRate(44100)
+                setOutputFile(file.absolutePath)
+                prepare()
+                start()
+            }
+            recordingStartTime = System.currentTimeMillis()
+            true
+        } catch (e: Exception) {
+            mediaRecorder = null
+            false
         }
+    }
+
+    private fun stopVoiceRecording(): Map<String, Any?> {
+        return try {
+            val recorder = mediaRecorder
+            if (recorder != null) {
+                try { recorder.stop() } catch (_: Exception) {}
+                recorder.release()
+                mediaRecorder = null
+            }
+            val file = voiceNoteFile
+            if (file != null && file.exists() && file.length() > 0) {
+                val durationSec = ((System.currentTimeMillis() - recordingStartTime) / 1000).toInt()
+                val bytes = file.readBytes()
+                val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                mapOf(
+                    "success" to true,
+                    "filePath" to file.absolutePath,
+                    "base64" to base64,
+                    "durationSec" to durationSec,
+                    "size" to file.length()
+                )
+            } else {
+                mapOf("success" to false)
+            }
+        } catch (e: Exception) {
+            mediaRecorder = null
+            mapOf("success" to false, "error" to (e.message ?: "Unknown error"))
+        }
+    }
+
+    private fun showEmergencyNotification(title: String, body: String, victimId: String? = null) {
+        if (!victimId.isNullOrEmpty()) { silencedVictimIds.remove(victimId); activeEmergencyVictim = victimId }
         if (!victimId.isNullOrEmpty()) {
             activeEmergencyVictim = victimId
         }
